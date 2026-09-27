@@ -683,9 +683,69 @@ function bindSearch(form, input, list, onPick) {
   });
 }
 
+// ---------- permissions ----------
+
+/** 'granted' | 'prompt' | 'denied' | 'unknown' (no Permissions API, e.g. older iPhones) */
+async function locationPermission() {
+  try {
+    return (await navigator.permissions.query({ name: 'geolocation' })).state;
+  } catch {
+    return 'unknown';
+  }
+}
+
+/**
+ * On first open, ask for location with a clear explanation before anything else.
+ * Browsers only show their permission popup after a tap, so this screen provides it.
+ */
+async function askPermissionsFirst(next) {
+  if (!navigator.geolocation || storage.get('pp:permAsked', false)) return next();
+  const status = await locationPermission();
+  if (status === 'granted') return next();
+
+  const done = () => {
+    storage.set('pp:permAsked', true);
+    next();
+  };
+  $share.hidden = true;
+  $app.innerHTML = `
+    <section class="card hero perm">
+      <div class="perm-icon" aria-hidden="true">📍</div>
+      <h1>Allow your location</h1>
+      <p>Pickup Planner uses your location to find the best stop for your pickup, so you don't have to type your address.
+        It's only used when you tap <em>Use my location</em>, and only the people in your trip see it.</p>
+      <div id="permHelp" class="banner error small" ${status === 'denied' ? '' : 'hidden'}>
+        <strong>Location is blocked.</strong> ${esc(locationHelp())}
+      </div>
+      <button id="permAllow" class="btn block big">📍 Allow location</button>
+      <button id="permSkip" class="btn ghost block" style="margin-top:10px">Not now, I'll type my address</button>
+    </section>`;
+
+  const allow = document.getElementById('permAllow');
+  document.getElementById('permSkip').addEventListener('click', done);
+  allow.addEventListener('click', async () => {
+    allow.disabled = true;
+    allow.innerHTML = '<span class="spinner"></span> Waiting for your answer…';
+    try {
+      await getGps();
+      toast('Location allowed ✓');
+      done();
+    } catch (err) {
+      const help = document.getElementById('permHelp');
+      help.innerHTML = err.denied
+        ? `<strong>Location is blocked.</strong> ${esc(locationHelp())}`
+        : `${esc(err.message)}. You can try again or type your address later.`;
+      help.hidden = false;
+      allow.disabled = false;
+      allow.textContent = '📍 Try again';
+      document.getElementById('permSkip').textContent = 'Continue without location';
+    }
+  });
+}
+
 // ---------- boot ----------
 
 if ('serviceWorker' in navigator) {
   window.addEventListener('load', () => navigator.serviceWorker.register('/sw.js').catch(() => {}));
 }
-route();
+askPermissionsFirst(route);

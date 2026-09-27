@@ -181,3 +181,11 @@ details[open] summary::after { content: "▴"; }
 }
 .alt { display: flex; justify-content: space-between; gap: 10px; padding: 8px 0; border-bottom: 1px solid var(--line); font-size: .9rem; }
 .alt:last-child { border-bottom: 0; }
+
+/* first-open permission screen */
+.perm { text-align: center; }
+.perm-icon { font-size: 3rem; line-height: 1; margin: 6px 0 10px; }
+.perm p { text-align: left; }
+.perm .banner { text-align: left; }
+
+[hidden] { display: none !important; }
