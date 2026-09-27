@@ -10,7 +10,7 @@ It supports one driver and up to 6 riders. With several riders it chooses both t
 ## Run it
 
 ```bash
-npm start          # http://localhost:3000   (Node 20+, no dependencies)
+npm start          # http://localhost:3000   (Node 22+, no runtime dependencies)
 npm test           # unit tests for the planning engine
 ```
 
@@ -29,10 +29,12 @@ On phones, GPS only works over **HTTPS**. To try it on a real phone, deploy it (
 
 ```
 server/
-  index.js      HTTP server, JSON API, static files (no framework)
+  api.js        JSON API routes (shared by both hosts)
+  index.js      Node HTTP server: API + static files (no framework)
   planner.js    the planning engine (pure logic + orchestration)
   providers.js  Transitous / OSRM / Nominatim clients
-  store.js      trip storage (JSON file; trips expire after 3 days)
+  store.js      trip storage: JSON file, or Netlify Blobs (trips expire after 3 days)
+netlify/        Netlify Function wrapping server/api.js
 public/         the phone app (PWA): index.html, app.js, styles.css, sw.js, manifest
 test/           node:test unit tests
 ```
@@ -49,13 +51,41 @@ test/           node:test unit tests
 | POST | `/api/trips/:id/plan` | compute the plan |
 | GET | `/api/geocode?q=` · `/api/reverse?lat=&lon=` | search places / GPS → address |
 
-## iPhone & Samsung
+## iPhone & Android apps
 
-The app is a **Progressive Web App**. Open the link in Safari (iPhone) or Chrome (Samsung) and choose **Add to Home Screen**, and it runs full-screen like a native app. To publish to the App Store and Google Play later, wrap `public/` with [Capacitor](https://capacitorjs.com). The code can stay the same; native GPS and push notifications ("time to leave!") can be added as plugins.
+`ios/` and `android/` are native [Capacitor](https://capacitorjs.com) apps. They load the hosted server, so API calls, share links and updates behave exactly like the web app. Update the server and every installed app picks up the change without a new store release.
+
+```bash
+npm install                                   # Capacitor tooling (dev only; the server itself has no deps)
+APP_URL=https://your-host.example npx cap sync   # point the apps at your deployed server
+npm run ios                                   # opens Xcode    → pick a device → ▶ Run
+npm run android                               # opens Android Studio → ▶ Run
+```
+
+Without `APP_URL` the apps point at `http://localhost:3000`, which is useful for the iOS simulator while `npm start` is running. For the Android emulator, also run `adb reverse tcp:3000 tcp:3000`. Real phones need a public HTTPS `APP_URL`.
+
+- App id: `com.pickupplanner.app`. Change it in `capacitor.config.js` before the first store upload.
+- Icons and splash screens are generated from `assets/icon.png` with `npx @capacitor/assets generate --ios --android`.
+- Publishing needs an Apple Developer account ($99/yr) for the App Store and a Google Play Console account ($25 once).
+
+The web version still works as a PWA: open the link and choose **Add to Home Screen**.
 
 ## Deploying
 
-This is a single Node process with no build step. It runs on Render, Railway, Fly.io or any VPS. Set `PORT`, and optionally `DATA_FILE`.
+**Netlify.** `netlify.toml` serves `public/` as the site and runs the API as a Netlify Function (`netlify/functions/api.mjs`). Trips are stored in Netlify Blobs. No build step is needed.
+
+```bash
+npx netlify-cli login
+npx netlify-cli deploy --create-site pickup-planner --prod   # first time
+npx netlify-cli deploy --prod                                # later deploys
+npx netlify-cli dev                                          # run the Netlify version locally (:8888)
+```
+
+Or connect the GitHub repo in the Netlify dashboard so every push deploys.
+
+**Any Node host.** `npm start` is a single process with no build step. It runs on Render, Railway, Fly.io or any VPS. Set `PORT`, and optionally `DATA_FILE`.
+
+Both run the same routes (`server/api.js`).
 The free public services it uses have fair-use limits. For real traffic, self-host them or point the env vars at your own instances:
 
 | Env var | Default | Self-host option |

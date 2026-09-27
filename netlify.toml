@@ -1,0 +1,24 @@
+# Netlify: static app from public/, API as a Function (netlify/functions/api.mjs).
+[build]
+  publish = "public"
+  command = ""
+
+[functions]
+  node_bundler = "esbuild"
+  included_files = ["server/**"]
+
+# Share links (/t/<trip id>) are client-side routes.
+[[redirects]]
+  from = "/t/*"
+  to = "/index.html"
+  status = 200
+
+[[headers]]
+  for = "/*.html"
+  [headers.values]
+    Cache-Control = "no-cache"
+
+[[headers]]
+  for = "/sw.js"
+  [headers.values]
+    Cache-Control = "no-cache"
