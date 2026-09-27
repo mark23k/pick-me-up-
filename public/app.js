@@ -96,6 +96,11 @@ function locationHelp() {
       ? 'Android Settings → Apps → Pickup Planner → Permissions → Location → Allow.'
       : 'Tap the icon left of the web address → Permissions → Location → Allow. Also check that Location is on in Android Settings.';
   }
+  if (/Macintosh/.test(ua) && navigator.maxTouchPoints < 2) {  // iPads also report "Macintosh"
+    return /Chrome\//.test(ua)
+      ? 'Click the icon left of the web address → Location → Allow. Also check System Settings → Privacy & Security → Location Services → Google Chrome.'
+      : 'Safari → Settings → Websites → Location → set this site to Allow. Also check System Settings → Privacy & Security → Location Services → Safari.';
+  }
   return "Allow location for this site in your browser's settings, then try again.";
 }
 
@@ -699,47 +704,35 @@ async function locationPermission() {
  * Browsers only show their permission popup after a tap, so this screen provides it.
  */
 async function askPermissionsFirst(next) {
-  if (!navigator.geolocation || storage.get('pp:permAsked', false)) return next();
-  const status = await locationPermission();
-  if (status === 'granted') return next();
+  const isPhone = /iPhone|iPad|iPod|Android/.test(navigator.userAgent);
+  if (!isPhone || !navigator.geolocation || storage.get('pp:permAsked', false)) return next();
+  // Already allowed, or already blocked (only the user can undo that): go straight in.
+  if (['granted', 'denied'].includes(await locationPermission())) return next();
 
-  const done = () => {
-    storage.set('pp:permAsked', true);
-    next();
-  };
   $share.hidden = true;
   $app.innerHTML = `
     <section class="card hero perm">
       <div class="perm-icon" aria-hidden="true">📍</div>
       <h1>Allow your location</h1>
-      <p>Pickup Planner uses your location to find the best stop for your pickup, so you don't have to type your address.
-        It's only used when you tap <em>Use my location</em>, and only the people in your trip see it.</p>
-      <div id="permHelp" class="banner error small" ${status === 'denied' ? '' : 'hidden'}>
-        <strong>Location is blocked.</strong> ${esc(locationHelp())}
-      </div>
+      <p>So you don't have to type your address. Only the people in your trip see it.</p>
       <button id="permAllow" class="btn block big">📍 Allow location</button>
-      <button id="permSkip" class="btn ghost block" style="margin-top:10px">Not now, I'll type my address</button>
+      <button id="permSkip" class="btn ghost block" style="margin-top:10px">Not now</button>
     </section>`;
 
-  const allow = document.getElementById('permAllow');
+  const done = () => {
+    storage.set('pp:permAsked', true);
+    next();
+  };
   document.getElementById('permSkip').addEventListener('click', done);
-  allow.addEventListener('click', async () => {
-    allow.disabled = true;
-    allow.innerHTML = '<span class="spinner"></span> Waiting for your answer…';
+  document.getElementById('permAllow').addEventListener('click', async (e) => {
+    e.currentTarget.disabled = true;
     try {
       await getGps();
       toast('Location allowed ✓');
-      done();
-    } catch (err) {
-      const help = document.getElementById('permHelp');
-      help.innerHTML = err.denied
-        ? `<strong>Location is blocked.</strong> ${esc(locationHelp())}`
-        : `${esc(err.message)}. You can try again or type your address later.`;
-      help.hidden = false;
-      allow.disabled = false;
-      allow.textContent = '📍 Try again';
-      document.getElementById('permSkip').textContent = 'Continue without location';
+    } catch {
+      /* whatever they answered, carry on; "Use my location" explains how to unblock */
     }
+    done();
   });
 }
 
