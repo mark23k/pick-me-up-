@@ -425,6 +425,7 @@ async function planTrip(input, providers) {
   const heading = tripStops[0] || sharedDest; // where the group heads after pickups
 
   // 1. transit itineraries per rider: toward the nearest drivers and toward where the group is heading
+  const slowFor = new Set(); // riders whose timetable lookups failed or timed out
   const itinsPerRider = await Promise.all(
     riders.map(async (r) => {
       const targets = [...drivers]
@@ -436,8 +437,8 @@ async function planTrip(input, providers) {
       const distinct = targets.filter((p, i) => !targets.slice(0, i).some((q) => haversine(p, q) < 2000));
       const results = await Promise.all(
         distinct.map((to) =>
-          providers.transitPlan(r.place, to, { time: new Date(t0), count: 5 }).catch((e) => {
-            notes.push(`Transit lookup failed for ${r.name}: ${e.message}`);
+          providers.transitPlan(r.place, to, { time: new Date(t0), count: 5 }).catch(() => {
+            slowFor.add(r.name);
             return [];
           }),
         ),
@@ -464,7 +465,9 @@ async function planTrip(input, providers) {
   const perRiderLimit = Math.max(4, Math.min(24, Math.floor((MAX_MATRIX_POINTS - fixed) / riders.length)));
   const riderCands = riders.map((r, i) => {
     const all = extractCandidates(r, itinsPerRider[i], t0);
-    if (all.length === 1) notes.push(`No public transit found for ${r.name} at this time, so a driver will pick them up at their location.`);
+    if (all.length === 1 && !slowFor.has(r.name)) {
+      notes.push(`No public transit found for ${r.name} at this time, so a driver will pick them up at their location.`);
+    }
     return pruneCandidates(all, {
       driverOrigins: drivers.map((d) => d.place),
       destination: heading,
@@ -472,6 +475,11 @@ async function planTrip(input, providers) {
       limit: perRiderLimit,
     });
   });
+  if (slowFor.size) {
+    const names = [...slowFor];
+    const list = names.length > 1 ? `${names.slice(0, -1).join(', ')} and ${names.at(-1)}` : names[0];
+    notes.push(`Bus times for ${list} were slow to load, so some bus options may be missing. Tap Recalculate to try again.`);
+  }
   const indexByKey = new Map();
   for (const cands of riderCands) {
     for (const c of cands) {

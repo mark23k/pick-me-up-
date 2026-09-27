@@ -10,7 +10,7 @@ const NOMINATIM_URL = process.env.NOMINATIM_URL || 'https://nominatim.openstreet
 const USER_AGENT = process.env.USER_AGENT || 'pickup-planner/1.0 (github.com/pickup-planner)';
 // Netlify stops a function after 10 s, so each call gets a budget that keeps a plan under that:
 // transit lookups (parallel) + matrix + route/re-plans (parallel).
-const TIMEOUT = { transit: 4000, matrix: 4000, route: 2500 };
+const TIMEOUT = { transit: 4500, matrix: 4000, route: 2500 };
 
 async function getJson(url, { timeoutMs = 25000 } = {}) {
   const res = await fetch(url, {

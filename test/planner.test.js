@@ -314,3 +314,20 @@ test('a rider is not sent on a two-hour bus ride when the car can collect them n
   assert.equal(noCost[0].picks[0].cand.key, 'farStop');
   assert.equal(withCost[0].picks[0].cand.key, 'home');
 });
+
+test('slow timetable lookups give one clear note instead of an error per lookup', async () => {
+  const res = await planTrip(
+    {
+      drivers: [{ id: 'a', name: 'Avi', place: at(32.0) }],
+      riders: [
+        { id: 'r1', name: 'Roni', place: at(32.05) },
+        { id: 'r2', name: 'Dana', place: at(32.06) },
+      ],
+      destination: { type: 'custom', place: at(32.5, 'Haifa') },
+      departAfter: new Date(T0).toISOString(),
+      trafficFactor: 1,
+    },
+    { ...flatProviders, transitPlan: async () => { throw new Error('The operation was aborted due to timeout'); } },
+  );
+  assert.deepEqual(res.notes, ['Bus times for Roni and Dana were slow to load, so some bus options may be missing. Tap Recalculate to try again.']);
+});
