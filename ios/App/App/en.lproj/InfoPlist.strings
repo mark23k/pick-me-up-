@@ -1,2 +1,2 @@
 /* iPhone system popup when the app asks for location (English) */
-"NSLocationWhenInUseUsageDescription" = "Pickup Planner uses your location to find the best pickup spot. Only the people in your trip see it.";
+"NSLocationWhenInUseUsageDescription" = "Your location is used to find the best pickup spot and is only shown to people in your trip.";

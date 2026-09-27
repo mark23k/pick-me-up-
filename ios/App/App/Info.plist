@@ -34,7 +34,7 @@
 	<key>LSRequiresIPhoneOS</key>
 	<true/>
 	<key>NSLocationWhenInUseUsageDescription</key>
-	<string>Pickup Planner משתמשת במיקום שלכם כדי למצוא את נקודת האיסוף הכי טובה. רק מי שבנסיעה רואה אותו.</string>
+	<string>המיקום משמש לחישוב נקודת האיסוף המתאימה ביותר, ומוצג רק למשתתפי הנסיעה.</string>
 	<key>UIApplicationSceneManifest</key>
 	<dict>
 		<key>UIApplicationSupportsMultipleScenes</key>

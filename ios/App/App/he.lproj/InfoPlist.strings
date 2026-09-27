@@ -1,2 +1,2 @@
-/* iPhone system popup when the app asks for location (Hebrew) */
-"NSLocationWhenInUseUsageDescription" = "Pickup Planner משתמשת במיקום שלכם כדי למצוא את נקודת האיסוף הכי טובה. רק מי שבנסיעה רואה אותו.";
+/* iPhone system popup when the app asks for location (Hebrew). Keep it starting with Hebrew so iOS lays it out right-to-left. */
+"NSLocationWhenInUseUsageDescription" = "המיקום משמש לחישוב נקודת האיסוף המתאימה ביותר, ומוצג רק למשתתפי הנסיעה.";
