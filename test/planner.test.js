@@ -331,3 +331,55 @@ test('slow timetable lookups give one clear note instead of an error per lookup'
   );
   assert.deepEqual(res.notes, ['Bus times for Roni and Dana were slow to load, so some bus options may be missing. Tap Recalculate to try again.']);
 });
+
+// ---------- arrive-by ----------
+
+test('arrive by: every car reaches the destination right on time, leaving as late as possible', async () => {
+  const arriveBy = new Date(T0 + 6 * 60 * MIN).toISOString(); // Avi's drive alone is ~4.5 h in this fake world
+  const res = await planTrip(
+    {
+      drivers: [
+        { id: 'a', name: 'Avi', place: at(32.0) },
+        { id: 'b', name: 'Bat', place: at(32.4) },
+      ],
+      riders: [
+        { id: 'r1', name: 'Roni', place: at(32.02) },
+        { id: 'r2', name: 'Dana', place: at(32.42) },
+      ],
+      stops: [at(32.6, 'Gas')],
+      destination: { type: 'custom', place: at(32.8, 'Haifa') },
+      arriveBy,
+      now: T0,
+      trafficFactor: 1,
+    },
+    flatProviders,
+  );
+  for (const d of res.drivers.filter((x) => x.stops.length)) {
+    assert.equal(d.destination.eta, arriveBy);
+    // 10 minutes at the stop on the way
+    assert.equal(Date.parse(d.waypoints[0].leaveAt) - Date.parse(d.waypoints[0].eta), 10 * MIN);
+    assert.ok(Date.parse(d.leaveAt) > T0 + 60 * MIN, 'leaves as late as possible, not at the start of planning');
+  }
+  assert.equal(res.summary.finalArrival, arriveBy);
+  assert.equal(res.arriveBy, arriveBy);
+  assert.ok(!res.notes.some((n) => /can't all get there/.test(n)));
+});
+
+test("arrive by: says so when the group can't make it in time", async () => {
+  const res = await planTrip(
+    {
+      drivers: [{ id: 'a', name: 'Avi', place: at(32.0) }],
+      riders: [{ id: 'r', name: 'Roni', place: at(32.02) }],
+      destination: { type: 'custom', place: at(33.0, 'Far') }, // ~1 h 35 min of driving
+      arriveBy: new Date(T0 + 30 * MIN).toISOString(),
+      now: T0,
+      trafficFactor: 1,
+    },
+    flatProviders,
+  );
+  assert.match(res.notes[0], /can't all get there by .* earliest everyone can arrive/);
+  await assert.rejects(
+    planTrip({ drivers: [{ id: 'a', name: 'A', place: at(32) }], riders: [{ id: 'r', name: 'R', place: at(32.1) }], arriveBy: new Date(T0 - MIN).toISOString(), now: T0 }, flatProviders),
+    /already passed/,
+  );
+});

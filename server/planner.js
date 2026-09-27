@@ -32,6 +32,8 @@ const LABELS_PER_NODE = 8;
 // time. Low enough that meeting at a stop still wins when it saves real driving, high
 // enough that nobody rides two hours to reach a car that could have come to them.
 const RIDER_TRANSIT_WEIGHT = 0.25;
+const STOP_DWELL_S = 10 * 60; // time spent at each stop on the way
+const MIN_MS = 60000;
 
 const PRIORITY_WEIGHTS = {
   fastest: 0.1, // 10 min of driving is worth 1 min of group time
@@ -340,6 +342,14 @@ function itinerarySteps(it, { legIndex = it.legs.length - 1, stopIndex = -1, pic
 }
 
 const wazeUrl = (p) => `https://waze.com/ul?ll=${p.lat.toFixed(6)},${p.lon.toFixed(6)}&navigate=yes`;
+const moovitUrl = (from, to, toName) =>
+  `https://moovit.com/?${new URLSearchParams({
+    from: from.label || 'My location',
+    fll: `${from.lat.toFixed(6)}_${from.lon.toFixed(6)}`,
+    to: toName || 'Pickup',
+    tll: `${to.lat.toFixed(6)}_${to.lon.toFixed(6)}`,
+    lang: 'he',
+  })}`;
 const gmapsTransitUrl = (from, to) =>
   `https://www.google.com/maps/dir/?api=1&origin=${from.lat},${from.lon}&destination=${to.lat},${to.lon}&travelmode=transit`;
 const gmapsDriveUrl = (origin, stops, dest) => {
@@ -356,6 +366,8 @@ const gmapsDriveUrl = (origin, stops, dest) => {
 };
 
 const iso = (ms) => new Date(ms).toISOString();
+const clock = new Intl.DateTimeFormat('en-GB', { hour: '2-digit', minute: '2-digit', timeZone: 'Asia/Jerusalem' });
+const hhmm = (ms) => clock.format(new Date(ms));
 
 // ---------- orchestration ----------
 
@@ -389,7 +401,8 @@ function* assignments(nRiders, seats) {
  * @param {Array<{id,name,place:{lat,lon,label}}>} input.riders
  * @param {{type:'driverStart'|'custom'|'none', place?:{lat,lon,label}}} input.destination
  * @param {Array<{lat,lon,label}>} [input.stops]  stops on the way, after the pickups
- * @param {string|Date} [input.departAfter]
+ * @param {string|Date} [input.arriveBy]     everyone should be at the destination by then
+ * @param {string|Date} [input.departAfter]  (without arriveBy) earliest departure
  * @param {'fastest'|'balanced'|'lessDriving'} [input.priority]
  * @param {number} [input.trafficFactor]
  * @param {object} providers - see providers.js
@@ -411,10 +424,14 @@ async function planTrip(input, providers) {
     );
   }
 
-  const t0 = Math.max(Date.now(), input.departAfter ? Date.parse(input.departAfter) : 0);
   const lambda = PRIORITY_WEIGHTS[input.priority] ?? PRIORITY_WEIGHTS.balanced;
   const traffic = input.trafficFactor || 1.2;
   const notes = [];
+  const now = input.now ?? Date.now();
+  const target = input.arriveBy ? Date.parse(input.arriveBy) : null;
+  if (target && target < now + 10 * MIN_MS) {
+    throw new Error('The arrival time has already passed. Choose a later time in Trip settings.');
+  }
 
   // Where every car goes after its pickups: the stops in order, then the destination.
   const tripStops = (input.stops || []).slice(0, MAX_STOPS).map((s) => ({ ...s, label: s.label || 'Stop' }));
@@ -423,6 +440,22 @@ async function planTrip(input, providers) {
   // "driverStart" (older trips): each car goes back to its own start.
   const finalFor = (d) => (destType === 'custom' ? sharedDest : destType === 'none' ? null : { ...d.place, label: d.place.label || 'Back to start' });
   const heading = tripStops[0] || sharedDest; // where the group heads after pickups
+
+  // Planning starts at t0. With an arrival time, start early enough for the longest drive
+  // plus time for pickups; each car's timeline is later shifted to arrive right on time.
+  let t0 = Math.max(now, input.departAfter ? Date.parse(input.departAfter) : 0);
+  if (target && input.startAt) t0 = input.startAt; // retry from an earlier start, see below
+  else if (target) {
+    const longest = Math.max(
+      ...drivers.map((d) => {
+        const pts = [d.place, ...tripStops, ...(finalFor(d) ? [finalFor(d)] : [])];
+        let sec = 0;
+        for (let i = 1; i < pts.length; i++) sec += estimateDrive(pts[i - 1], pts[i]);
+        return sec * traffic * 1.3 + tripStops.length * STOP_DWELL_S;
+      }),
+    );
+    t0 = Math.max(now, target - longest * 1000 - 75 * MIN_MS);
+  }
 
   // 1. transit itineraries per rider: toward the nearest drivers and toward where the group is heading
   const slowFor = new Set(); // riders whose timetable lookups failed or timed out
@@ -496,7 +529,7 @@ async function planTrip(input, providers) {
   // time and driving after the last pickup: first chain point onward
   const tails = chains.map((chain) => {
     let s = 0;
-    for (let i = 1; i < chain.length; i++) s += dur(chain[i - 1], chain[i]) ?? Infinity;
+    for (let i = 1; i < chain.length; i++) s += STOP_DWELL_S * 1000 + (dur(chain[i - 1], chain[i]) ?? Infinity);
     return s;
   });
   const direct = drivers.map((_, di) => (chains[di].length ? (dur(di, chains[di][0]) ?? Infinity) + tails[di] : 0));
@@ -587,7 +620,7 @@ async function planTrip(input, providers) {
       // "ready" = when the driver needs to be there; pickup finishes one buffer later.
       // Leave so we reach the first stop exactly when it is ready, not earlier.
       for (const s of stops) s.readyAt = s.pickupAt - buffer;
-      const leaveAt = stops.length ? Math.max(t0, stops[0].readyAt - dur(di, stops[0].idx)) : t0;
+      let leaveAt = stops.length ? Math.max(t0, stops[0].readyAt - dur(di, stops[0].idx)) : t0;
       let clock = leaveAt;
       let at = di;
       for (const s of stops) {
@@ -595,16 +628,34 @@ async function planTrip(input, providers) {
         clock = s.pickupAt;
         at = s.idx;
       }
-      const chainEtas = chain.map((idx) => {
-        clock += dur(at, idx);
+      const chainEtas = chain.map((idx, i) => {
+        clock += (i > 0 ? STOP_DWELL_S * 1000 : 0) + dur(at, idx);
         at = idx;
         return clock;
       });
+      // With an arrival time, move the whole car later so it arrives right on time
+      // (riders then get a later bus below, via the long-wait re-plan).
+      const planEnd = chainEtas.length ? chainEtas.at(-1) : stops.length ? stops.at(-1).pickupAt : leaveAt;
+      const shift = target && planEnd < target ? target - planEnd : 0;
+      leaveAt += shift;
+      for (const s of stops) {
+        s.driverEta += shift;
+        s.pickupAt += shift;
+        s.readyAt += shift;
+      }
+      for (let i = 0; i < chainEtas.length; i++) chainEtas[i] += shift;
       const lastPickupAt = stops.length ? stops.at(-1).pickupAt : null;
       const endAt = chainEtas.length ? chainEtas.at(-1) : lastPickupAt;
 
       const waypointPlaces = tripStops;
-      const waypoints = waypointPlaces.map((p, i) => ({ label: p.label, lat: p.lat, lon: p.lon, eta: iso(chainEtas[i]), wazeUrl: wazeUrl(p) }));
+      const waypoints = waypointPlaces.map((p, i) => ({
+        label: p.label,
+        lat: p.lat,
+        lon: p.lon,
+        eta: iso(chainEtas[i]),
+        leaveAt: iso(chainEtas[i] + STOP_DWELL_S * 1000),
+        wazeUrl: wazeUrl(p),
+      }));
       const destination = fin ? { ...fin, eta: iso(chainEtas.at(-1)), wazeUrl: wazeUrl(fin) } : null;
 
       // drawn in parallel with the rider re-plans below
@@ -651,6 +702,7 @@ async function planTrip(input, providers) {
               steps: [{ type: 'home', text: 'Stay where you are. The driver comes to you.' }],
               geometry: [],
               mapsUrl: null,
+              moovitUrl: null,
             };
           }
           let plan = itinerarySteps(c.itinerary, {
@@ -687,6 +739,7 @@ async function planTrip(input, providers) {
             steps: plan.steps,
             geometry: plan.geometry,
             mapsUrl: gmapsTransitUrl(rider.place, c),
+            moovitUrl: moovitUrl(rider.place, c, c.name),
           };
         }),
       );
@@ -751,15 +804,26 @@ async function planTrip(input, providers) {
   const driversOut = carPlans.map((c) => c.driver);
   const active = driversOut.filter((d) => d.stops.length);
   const riderOut = riders.map((r) => carPlans.flatMap((c) => c.riders).find((x) => x.participantId === r.id));
+  const finalArrival = Math.max(...active.map((d) => Date.parse(d.endAt)));
+  // The start estimate was too tight but there is still time: plan once more from earlier.
+  if (target && finalArrival > target + MIN_MS && t0 > now && !input.startAt) {
+    return planTrip({ ...input, now, startAt: Math.max(now, t0 - (finalArrival - target) - 20 * MIN_MS) }, providers);
+  }
+  if (target && finalArrival > target + MIN_MS) {
+    notes.unshift(
+      `You can't all get there by ${hhmm(target)}. The earliest everyone can arrive is about ${hhmm(finalArrival)}. Change the arrival time in Trip settings, or go with this plan.`,
+    );
+  }
 
   return {
     computedAt: new Date().toISOString(),
     departAfter: iso(t0),
+    arriveBy: target ? iso(target) : null,
     priority: input.priority || 'balanced',
     summary: {
       driverLeaveAt: iso(Math.min(...active.map((d) => Date.parse(d.leaveAt)))),
       lastPickupAt: iso(Math.max(...active.map((d) => Date.parse(d.lastPickupAt)))),
-      finalArrival: iso(best.end),
+      finalArrival: iso(finalArrival),
       driveMinutes: active.reduce((a, d) => a + d.driveMinutes, 0),
       cars: active.length,
     },

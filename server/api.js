@@ -36,6 +36,13 @@ function cleanPlace(p) {
   return { lat, lon, label: String(p.label || '').slice(0, 120) };
 }
 
+function cleanTime(v) {
+  if (!v) return null;
+  const ms = Date.parse(v);
+  if (Number.isNaN(ms)) throw new HttpError(400, 'Bad time');
+  return new Date(ms).toISOString();
+}
+
 function cleanStops(list) {
   if (!Array.isArray(list)) throw new HttpError(400, 'Stops must be a list');
   if (list.length > MAX_STOPS) throw new HttpError(400, `At most ${MAX_STOPS} stops on the way`);
@@ -82,6 +89,7 @@ const routes = [
       createdAt: new Date().toISOString(),
       updatedAt: new Date().toISOString(),
       departAfter: null, // null = now
+      arriveBy: cleanTime(b.arriveBy), // everyone at the destination by then (null = as soon as possible)
       priority: 'balanced',
       destination: destPlace ? { type: 'custom', place: destPlace } : { type: 'driverStart' },
       stops: cleanStops(b.stops || []),
@@ -98,10 +106,8 @@ const routes = [
   ['PATCH', /^\/api\/trips\/([\w-]+)$/, async (b, [id]) => {
     const trip = await getTrip(id);
     if ('title' in b) trip.title = cleanName(b.title);
-    if ('departAfter' in b) {
-      if (b.departAfter && Number.isNaN(Date.parse(b.departAfter))) throw new HttpError(400, 'Bad time');
-      trip.departAfter = b.departAfter || null;
-    }
+    if ('departAfter' in b) trip.departAfter = cleanTime(b.departAfter);
+    if ('arriveBy' in b) trip.arriveBy = cleanTime(b.arriveBy);
     if ('priority' in b) {
       if (!(b.priority in PRIORITY_WEIGHTS)) throw new HttpError(400, 'Bad priority');
       trip.priority = b.priority;
@@ -168,6 +174,7 @@ const routes = [
           destination: trip.destination,
           stops: trip.stops || [],
           departAfter: trip.departAfter,
+          arriveBy: trip.arriveBy,
           priority: trip.priority,
         },
         providers,

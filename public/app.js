@@ -13,6 +13,13 @@ const esc = (s) =>
 const timeFmt = new Intl.DateTimeFormat('en-GB', { hour: '2-digit', minute: '2-digit', timeZone: 'Asia/Jerusalem' });
 const fmtTime = (iso) => (iso ? timeFmt.format(new Date(iso)) : '—');
 const minutesBetween = (a, b) => Math.round((Date.parse(b) - Date.parse(a)) / 60000);
+const dayFmt = new Intl.DateTimeFormat('en-GB', { weekday: 'short', day: 'numeric', month: 'short', timeZone: 'Asia/Jerusalem' });
+const dayKey = (d) => dayFmt.format(d);
+/** "18:00", or "Fri 3 Oct 18:00" when it isn't today. */
+const fmtWhen = (iso) => (!iso ? '—' : dayKey(new Date(iso)) === dayKey(new Date()) ? fmtTime(iso) : `${dayKey(new Date(iso))} ${fmtTime(iso)}`);
+// <input type="datetime-local"> works in the phone's local time
+const toLocalInput = (iso) => (iso ? new Date(Date.parse(iso) - new Date().getTimezoneOffset() * 60000).toISOString().slice(0, 16) : '');
+const fromLocalInput = (v) => (v ? new Date(v).toISOString() : null);
 
 function relative(iso) {
   const m = Math.round((Date.parse(iso) - Date.now()) / 60000);
@@ -164,6 +171,8 @@ function renderHome() {
       <label for="homeDestInput">Where are you all going?</label>
       <p id="homeDestChosen" class="small chosen" dir="auto" hidden></p>
       ${pickerHtml('homeDest', 'Final destination: address or place')}
+      <label for="homeArrive">What time do you need to be there?</label>
+      <input id="homeArrive" type="datetime-local" min="${toLocalInput(new Date().toISOString())}">
       <label for="homeStopInput">Stops on the way <span class="muted">(optional)</span></label>
       <ol id="homeStops" class="stop-list"></ol>
       <div id="homeStopPicker">${pickerHtml('homeStop', 'Add a stop, e.g. a gas station')}</div>
@@ -172,7 +181,7 @@ function renderHome() {
     <section class="card small muted">
       <b>How it works</b>
       <ol style="padding-inline-start:18px;margin:8px 0 0">
-        <li>Start a plan with where you're going and send the link to your friends (WhatsApp works well).</li>
+        <li>Start a plan with where you're going and when you need to be there, then send the link to your friends (WhatsApp works well).</li>
         <li>Each person opens the link and taps <i>Use my location</i>. There can be more than one driver.</li>
         <li>Tap <i>Find the best pickup</i>. Everyone sees which car takes them, what time to leave and where to go.</li>
       </ol>
@@ -219,6 +228,11 @@ function renderHome() {
       toast('Choose where you are all going');
       return $('homeDestInput').focus();
     }
+    const arriveBy = fromLocalInput($('homeArrive').value);
+    if (!arriveBy || Date.parse(arriveBy) < Date.now() + 10 * 60000) {
+      toast(arriveBy ? 'That time has already passed' : 'Choose what time you need to be there');
+      return $('homeArrive').focus();
+    }
     storage.set('pp:name', name);
     try {
       const { trip, participantId } = await api('POST', '/api/trips', {
@@ -226,6 +240,7 @@ function renderHome() {
         role,
         destination: draft.dest,
         stops: draft.stops,
+        arriveBy,
       });
       rememberMe(trip.id, participantId);
       history.pushState(null, '', `/t/${trip.id}`);
@@ -395,18 +410,16 @@ function peopleCard() {
 function settingsCard() {
   const t = state.trip;
   const d = t.destination || { type: 'driverStart' };
-  const local = t.departAfter
-    ? new Date(Date.parse(t.departAfter) - new Date().getTimezoneOffset() * 60000).toISOString().slice(0, 16)
-    : '';
   const pr = t.priority || 'balanced';
   return `
     <details class="card" id="settings" ${storage.get('pp:settingsOpen', false) ? 'open' : ''}>
       <summary>Trip settings <span class="small muted" style="margin-inline-start:auto;margin-inline-end:8px">${esc(settingsSummary())}</span></summary>
-      <label for="when">Earliest time to leave</label>
+      <label for="arriveBy">Be at the destination by</label>
       <div class="row">
-        <input id="when" class="grow" type="datetime-local" value="${local}">
-        <button class="btn ghost small" id="nowBtn">Now</button>
+        <input id="arriveBy" class="grow" type="datetime-local" value="${toLocalInput(t.arriveBy)}" min="${toLocalInput(new Date().toISOString())}">
+        <button class="btn ghost small" id="asapBtn">ASAP</button>
       </div>
+      ${t.arriveBy ? '' : '<p class="small muted" style="margin:6px 0 0">No time set: everyone leaves now and arrives as early as possible.</p>'}
       <label for="destInput">Going to</label>
       <p class="small chosen" dir="auto">${d.type === 'custom' && d.place ? '🏁 ' + esc(d.place.label) : d.type === 'none' ? 'Nowhere set: just the pickups' : 'Back to the driver’s start'}</p>
       ${pickerHtml('dest', 'Change destination')}
@@ -424,7 +437,7 @@ function settingsCard() {
 
 function settingsSummary() {
   const t = state.trip;
-  const when = t.departAfter ? fmtTime(t.departAfter) : 'now';
+  const when = t.arriveBy ? `by ${fmtWhen(t.arriveBy)}` : 'ASAP';
   const d = t.destination || {};
   const dest = d.type === 'custom' && d.place ? `🏁 ${d.place.label.split(',')[0]}` : d.type === 'none' ? 'pickup only' : '↩ back';
   const n = (t.stops || []).length;
@@ -452,7 +465,7 @@ function resultsHtml(plan) {
     <div class="summary">
       <div><b>${fmtTime(s.driverLeaveAt)}</b><span>${cars.length > 1 ? 'First car leaves' : 'Driver leaves'}</span></div>
       <div><b>${fmtTime(s.lastPickupAt)}</b><span>${cars.length > 1 ? 'Everyone picked up' : 'Everyone in the car'}</span></div>
-      <div><b>${fmtTime(s.finalArrival)}</b><span>${drivers.some((d) => d.destination) ? 'At destination' : 'Done'}</span></div>
+      <div><b>${fmtTime(s.finalArrival)}</b><span>${drivers.some((d) => d.destination) ? (plan.arriveBy ? `At destination (goal ${fmtTime(plan.arriveBy)})` : 'At destination') : 'Done'}</span></div>
     </div>
     ${
       drivers.length > 1
@@ -497,6 +510,7 @@ function driverView(d, plan) {
     .map(
       (w) => `<li><span class="dot">📍</span>
         <div><span class="t">${fmtTime(w.eta)}</span> Stop at <b dir="auto">${esc(w.label)}</b></div>
+        ${w.leaveAt ? `<div class="detail">About 10 min, leave by ${fmtTime(w.leaveAt)}</div>` : ''}
         <div class="actions"><a class="btn waze small" href="${esc(w.wazeUrl)}" target="_blank" rel="noopener">Navigate with Waze</a></div></li>`,
     )
     .join('');
@@ -522,45 +536,51 @@ function driverView(d, plan) {
     </ol>
     ${d.googleMapsUrl ? `<a class="btn ghost block" href="${esc(d.googleMapsUrl)}" target="_blank" rel="noopener">Whole route in Google Maps</a>` : ''}
     <p class="small muted">Waze opens one stop at a time. After each stop, come back here and tap the next one. Drive times include a 20% traffic allowance, but check Waze for live traffic before you leave.${
-      waypoints ? ' Times after a stop on the way assume you don’t stay long.' : ''
+      waypoints ? ' Each stop on the way allows about 10 minutes.' : ''
     }</p>`;
 }
 
 function riderView(r, plan) {
   if (!r) return '<p>No instructions.</p>';
   const p = r.pickup;
+  const driverName = esc(r.driverName || plan.driver.name);
   if (r.mode === 'home') {
     return `
       <div class="leave"><span>Driver arrives</span><span class="count">${relative(p.driverEta)}</span></div>
       <div class="leave"><span class="when">${fmtTime(p.driverEta)}</span></div>
-      <p>🏠 Stay where you are. <b>${esc(r.driverName || plan.driver.name)}</b> will pick you up at <span dir="auto">${esc(p.name)}</span>.</p>`;
+      <p>🏠 Stay where you are. <b>${driverName}</b> will pick you up at <span dir="auto">${esc(p.name)}</span>.</p>`;
   }
-  const steps = r.steps
-    .map((s) => {
-      if (s.type === 'walk') {
-        return `<li><span class="dot">🚶</span><div><span class="t">${fmtTime(s.departAt)}</span> Walk ${s.minutes} min to <b dir="auto">${esc(s.to)}</b></div>
-          <div class="detail">${s.meters} m</div></li>`;
-      }
-      const icon = { Bus: '🚌', Train: '🚆', 'Light rail': '🚊', Metro: '🚇' }[s.modeLabel] || '🚌';
-      const last = s === r.steps.filter((x) => x.type === 'ride').at(-1);
-      return `<li class="ride"><span class="dot">${icon}</span>
-        <div><span class="t">${fmtTime(s.departAt)}</span> ${esc(s.modeLabel)} ${s.line ? `<span class="line-no">${esc(s.line)}</span>` : ''}
-          ${s.headsign ? `<span class="detail"> to <span dir="auto">${esc(s.headsign)}</span></span>` : ''}</div>
-        <div class="detail">Board at <span dir="auto">${esc(s.from)}</span>${s.fromCode ? ` (#${esc(s.fromCode)})` : ''}${!s.line && s.routeName ? ` · <span dir="auto">${esc(s.routeName)}</span>` : ''}${s.agency ? ` · ${esc(s.agency)}` : ''}</div>
-        <div class="${last ? 'getoff' : 'detail'}">${last ? '🛑 <b>Get off</b>' : 'Get off'} at <b dir="auto">${esc(s.to)}</b>${s.toCode ? ` (#${esc(s.toCode)})` : ''} at <b>${fmtTime(s.arriveAt)}</b> · ${s.stops} stop${s.stops === 1 ? '' : 's'}</div>
-      </li>`;
-    })
+  const rides = r.steps.filter((s) => s.type === 'ride');
+  const code = (c) => (c ? ` <span class="muted">#${esc(c)}</span>` : '');
+  const icon = (s) => ({ Bus: '🚌', Train: '🚆', 'Light rail': '🚊', Metro: '🚇' })[s.modeLabel] || '🚌';
+  const rideName = (s) =>
+    `${esc(s.modeLabel)} ${s.line ? `<span class="line-no">${esc(s.line)}</span>` : s.routeName ? `<span dir="auto">${esc(s.routeName)}</span>` : ''}${
+      s.headsign ? ` <span class="muted">to <span dir="auto">${esc(s.headsign)}</span></span>` : ''
+    }`;
+  const items = rides
+    .map(
+      (s, i) => `
+      <li><span class="dot">${i === 0 ? '🚏' : '🔁'}</span>
+        <div>${i === 0 ? 'Go to the stop' : 'Change at'} <b dir="auto">${esc(s.from)}</b>${code(s.fromCode)}</div></li>
+      <li class="ride"><span class="dot">${icon(s)}</span>
+        <div>Take ${rideName(s)} <span class="t">at ${fmtTime(s.departAt)}</span></div></li>
+      <li><span class="dot">🛑</span>
+        <div class="${i === rides.length - 1 ? 'getoff' : ''}">Get off at <b dir="auto">${esc(s.to)}</b>${code(s.toCode)} <span class="t">${fmtTime(s.arriveAt)}</span></div></li>`,
+    )
     .join('');
   return `
-    <div class="leave"><span>Leave at</span><span class="count">${relative(r.leaveAt)}</span></div>
-    <div class="leave"><span class="when">${fmtTime(r.leaveAt)}</span>
-      <span class="count">${minutesBetween(r.leaveAt, r.arriveAt)} min on the way</span></div>
+    <div class="leave"><span>Leave home at</span><span class="count">${relative(r.leaveAt)}</span></div>
+    <div class="leave"><span class="when">${fmtTime(r.leaveAt)}</span></div>
     <ol class="timeline">
-      ${steps}
-      <li><span class="dot">🚗</span><div><span class="t">${fmtTime(p.meetAt)}</span> <b>${esc(r.driverName || plan.driver.name)}</b> picks you up at <b dir="auto">${esc(p.name)}</b></div>
-        <div class="detail">${r.waitMinutes >= 2 ? `You’ll wait about ${r.waitMinutes} min.` : 'The driver should arrive about when you do.'}</div></li>
+      ${items}
+      <li><span class="dot">🚗</span><div><b>${driverName}</b> picks you up there at <b>${fmtTime(p.meetAt)}</b></div>
+        ${r.waitMinutes >= 5 ? `<div class="detail">You’ll wait about ${r.waitMinutes} min.</div>` : ''}</li>
     </ol>
-    <a class="btn ghost block" href="${esc(r.mapsUrl)}" target="_blank" rel="noopener">Check live times in Google Maps</a>`;
+    <div class="row">
+      ${r.mapsUrl ? `<a class="btn ghost grow" href="${esc(r.mapsUrl)}" target="_blank" rel="noopener">Google Maps</a>` : ''}
+      ${r.moovitUrl ? `<a class="btn ghost grow" href="${esc(r.moovitUrl)}" target="_blank" rel="noopener">Moovit</a>` : ''}
+    </div>
+    <p class="small muted">Buses can run late. Check live times in Google Maps or Moovit before you leave.</p>`;
 }
 
 function alternativesHtml(plan) {
@@ -709,10 +729,10 @@ function bindTrip() {
     }
   };
   q('settings')?.addEventListener('toggle', (e) => storage.set('pp:settingsOpen', e.target.open));
-  q('when')?.addEventListener('change', (e) => patch({ departAfter: e.target.value ? new Date(e.target.value).toISOString() : null }));
-  q('nowBtn')?.addEventListener('click', (e) => {
+  q('arriveBy')?.addEventListener('change', (e) => patch({ arriveBy: fromLocalInput(e.target.value) }));
+  q('asapBtn')?.addEventListener('click', (e) => {
     e.preventDefault();
-    patch({ departAfter: null });
+    patch({ arriveBy: null, departAfter: null });
   });
   bindSearch(q('destForm'), q('destInput'), q('destResults'), (place) => patch({ destination: { type: 'custom', place } }));
   bindSearch(q('stopForm'), q('stopInput'), q('stopResults'), (place) => patch({ stops: [...(trip.stops || []), place] }));
