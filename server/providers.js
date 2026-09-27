@@ -8,6 +8,9 @@ const TRANSIT_URL = process.env.TRANSIT_URL || 'https://api.transitous.org';
 const OSRM_URL = process.env.OSRM_URL || 'https://router.project-osrm.org';
 const NOMINATIM_URL = process.env.NOMINATIM_URL || 'https://nominatim.openstreetmap.org';
 const USER_AGENT = process.env.USER_AGENT || 'pickup-planner/1.0 (github.com/pickup-planner)';
+// Netlify stops a function after 10 s, so each call gets a budget that keeps a plan under that:
+// transit lookups (parallel) + matrix + route/re-plans (parallel).
+const TIMEOUT = { transit: 4000, matrix: 4000, route: 2500 };
 
 async function getJson(url, { timeoutMs = 25000 } = {}) {
   const res = await fetch(url, {
@@ -26,7 +29,7 @@ async function getJson(url, { timeoutMs = 25000 } = {}) {
  * @param {{lat:number, lon:number}} to
  * @param {{time: Date, arriveBy?: boolean, count?: number}} opts
  */
-async function transitPlan(from, to, { time, arriveBy = false, count = 5 }) {
+async function transitPlan(from, to, { time, arriveBy = false, count = 5, timeoutMs = TIMEOUT.transit }) {
   const qs = new URLSearchParams({
     fromPlace: `${from.lat},${from.lon}`,
     toPlace: `${to.lat},${to.lon}`,
@@ -36,7 +39,7 @@ async function transitPlan(from, to, { time, arriveBy = false, count = 5 }) {
     maxPreTransitTime: '1200', // walk at most 20 min to the first stop
     maxPostTransitTime: '1200',
   });
-  const data = await getJson(`${TRANSIT_URL}/api/v1/plan?${qs}`);
+  const data = await getJson(`${TRANSIT_URL}/api/v1/plan?${qs}`, { timeoutMs });
   return data.itineraries || [];
 }
 
@@ -46,7 +49,7 @@ async function transitPlan(from, to, { time, arriveBy = false, count = 5 }) {
 async function driveMatrix(points) {
   if (points.length > 100) throw new Error('driveMatrix: at most 100 points');
   const coords = points.map((p) => `${p.lon.toFixed(6)},${p.lat.toFixed(6)}`).join(';');
-  const data = await getJson(`${OSRM_URL}/table/v1/driving/${coords}?annotations=duration`);
+  const data = await getJson(`${OSRM_URL}/table/v1/driving/${coords}?annotations=duration`, { timeoutMs: TIMEOUT.matrix });
   if (data.code !== 'Ok') throw new Error(`OSRM table: ${data.code}`);
   return data.durations; // durations[i][j] = seconds from i to j (null if unreachable)
 }
@@ -56,6 +59,7 @@ async function driveRoute(points) {
   const coords = points.map((p) => `${p.lon.toFixed(6)},${p.lat.toFixed(6)}`).join(';');
   const data = await getJson(
     `${OSRM_URL}/route/v1/driving/${coords}?overview=full&geometries=geojson`,
+    { timeoutMs: TIMEOUT.route },
   );
   if (data.code !== 'Ok') throw new Error(`OSRM route: ${data.code}`);
   const r = data.routes[0];

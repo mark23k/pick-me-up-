@@ -1,11 +1,12 @@
 # Pickup Planner 🚗🚌
 
-Find the best place to pick up friends anywhere in Israel. Each person adds their location on their own phone. The app works out:
+Find the best place to pick up friends anywhere in Israel. Whoever starts the group enters where everyone is going, plus up to 3 stops on the way. Each person then adds their location on their own phone. The app works out:
 
+- **Which car takes whom:** up to 4 drivers, each with a set number of free seats. Riders are split so everyone arrives as early as possible without a lot of extra driving.
 - **For each rider:** which bus or train to take, where to board, **which stop to get off at**, and when to leave home.
-- **For the driver:** when to leave, the order of pickups, and a **Waze link** for each stop and for the final destination.
+- **For each driver:** when to leave, the order of pickups, then the stops and the destination, with a **Waze link** for each.
 
-It supports one driver and up to 6 riders. With several riders it chooses both the pickup order and each person's stop. Two riders may be sent to the same interchange so they're collected together.
+Pickup spots lean toward where the group is heading, so no one is sent the opposite way unless it's really faster. There can be up to 6 riders. Two riders may be sent to the same interchange so they're collected together.
 
 ## Run it
 
@@ -22,7 +23,7 @@ On phones, GPS only works over **HTTPS**. To try it on a real phone, deploy it (
 2. **Pickup candidates.** Every stop the rider passes where getting off is allowed becomes a possible pickup point, and the timetable says exactly when they'd be there. Their own location is a candidate too, for "the driver comes to you".
 3. **Pruning.** Candidates are narrowed to about 24 per rider, chosen to be promising and at least 300 m apart.
 4. **Drive times.** A single [OSRM](https://project-osrm.org) matrix call gets the drive time between every pair of points. A 20% traffic allowance is added.
-5. **Optimisation.** It tries every pickup order. For each order, dynamic programming keeps the best trade-offs between arrival time and driving time, and minimises `final arrival + λ × driving`. λ comes from *What matters most?*: Fastest, Balanced or Less driving.
+5. **Optimisation.** Each car's route is: pickups, then the stops in order, then the destination. For every driver and every group of riders that fits in their car, it tries every pickup order. Dynamic programming keeps the best trade-offs between arrival time and driving. It then chooses the split of riders between cars that minimises `average rider arrival + λ × extra driving + 0.25 × rider minutes on transit`. The last term stops riders being sent on long bus rides to reach a car that could have come to them. λ comes from *What matters most?*: Fastest, Balanced or Less driving.
 6. **Timeline.** The driver leaves so they reach the first stop just as it's ready. If a rider would wait more than 8 minutes, the app looks for a later bus (an arrive-by search) so they can leave home later.
 
 ## Project layout
@@ -43,11 +44,11 @@ test/           node:test unit tests
 
 | Method | Path | Purpose |
 |---|---|---|
-| POST | `/api/trips` | create trip `{name, role}` → `{trip, participantId}` |
+| POST | `/api/trips` | create trip `{name, role, destination, stops}` → `{trip, participantId}` |
 | GET | `/api/trips/:id` | read trip (+ plan) |
-| PATCH | `/api/trips/:id` | `{departAfter, priority, destination}` |
+| PATCH | `/api/trips/:id` | `{departAfter, priority, destination, stops}` |
 | POST | `/api/trips/:id/participants` | join `{name, role}` |
-| PATCH / DELETE | `/api/trips/:id/participants/:pid` | set `{place, name, role}` / remove |
+| PATCH / DELETE | `/api/trips/:id/participants/:pid` | set `{place, name, role, seats}` / remove |
 | POST | `/api/trips/:id/plan` | compute the plan |
 | GET | `/api/geocode?q=` · `/api/reverse?lat=&lon=` | search places / GPS → address |
 

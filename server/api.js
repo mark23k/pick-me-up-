@@ -3,7 +3,7 @@
 
 const crypto = require('node:crypto');
 const providers = require('./providers');
-const { planTrip, PRIORITY_WEIGHTS, MAX_RIDERS } = require('./planner');
+const { planTrip, PRIORITY_WEIGHTS, MAX_RIDERS, MAX_DRIVERS, MAX_STOPS, MAX_SEATS } = require('./planner');
 const store = require('./store');
 
 class HttpError extends Error {
@@ -36,6 +36,20 @@ function cleanPlace(p) {
   return { lat, lon, label: String(p.label || '').slice(0, 120) };
 }
 
+function cleanStops(list) {
+  if (!Array.isArray(list)) throw new HttpError(400, 'Stops must be a list');
+  if (list.length > MAX_STOPS) throw new HttpError(400, `At most ${MAX_STOPS} stops on the way`);
+  return list.map(cleanPlace).filter(Boolean);
+}
+
+const cleanSeats = (n) => Math.min(MAX_SEATS, Math.max(1, Math.round(Number(n)) || 4));
+
+function checkRoomFor(trip, role, exceptId = null) {
+  const others = trip.participants.filter((p) => p.id !== exceptId && p.role === role);
+  if (role === 'driver' && others.length >= MAX_DRIVERS) throw new HttpError(400, `This trip already has ${MAX_DRIVERS} drivers`);
+  if (role === 'rider' && others.length >= MAX_RIDERS) throw new HttpError(400, `This trip already has ${MAX_RIDERS} people to pick up`);
+}
+
 async function getTrip(id) {
   const trip = await store.get(id);
   if (!trip) throw new HttpError(404, 'Trip not found (links expire after 3 days)');
@@ -60,6 +74,8 @@ const routes = [
       role: b.role === 'rider' ? 'rider' : 'driver',
       place: cleanPlace(b.place),
     };
+    if (creator.role === 'driver') creator.seats = cleanSeats(b.seats);
+    const destPlace = cleanPlace(b.destination);
     const trip = {
       id: newId(),
       title: cleanName(b.title) || '',
@@ -67,7 +83,8 @@ const routes = [
       updatedAt: new Date().toISOString(),
       departAfter: null, // null = now
       priority: 'balanced',
-      destination: { type: 'driverStart' },
+      destination: destPlace ? { type: 'custom', place: destPlace } : { type: 'driverStart' },
+      stops: cleanStops(b.stops || []),
       participants: [creator],
       plan: null,
     };
@@ -95,6 +112,7 @@ const routes = [
       else if (d.type === 'none') trip.destination = { type: 'none' };
       else trip.destination = { type: 'driverStart' };
     }
+    if ('stops' in b) trip.stops = cleanStops(b.stops || []);
     await touch(trip);
     return [200, { trip }];
   }],
@@ -102,11 +120,10 @@ const routes = [
   // join
   ['POST', /^\/api\/trips\/([\w-]+)\/participants$/, async (b, [id]) => {
     const trip = await getTrip(id);
-    if (trip.participants.length >= MAX_RIDERS + 1) throw new HttpError(400, 'This trip is full');
-    const hasDriver = trip.participants.some((p) => p.role === 'driver');
-    let role = b.role === 'driver' ? 'driver' : 'rider';
-    if (role === 'driver' && hasDriver) throw new HttpError(400, 'This trip already has a driver');
+    const role = b.role === 'driver' ? 'driver' : 'rider';
+    checkRoomFor(trip, role);
     const p = { id: newId(), name: cleanName(b.name) || `Rider ${trip.participants.length}`, role, place: cleanPlace(b.place) };
+    if (role === 'driver') p.seats = cleanSeats(b.seats);
     trip.participants.push(p);
     await touch(trip);
     return [201, { trip, participantId: p.id }];
@@ -120,11 +137,12 @@ const routes = [
     if ('name' in b) p.name = cleanName(b.name) || p.name;
     if ('place' in b) p.place = cleanPlace(b.place);
     if ('role' in b && b.role !== p.role) {
-      if (b.role === 'driver' && trip.participants.some((x) => x.role === 'driver' && x.id !== pid)) {
-        throw new HttpError(400, 'This trip already has a driver');
-      }
-      p.role = b.role === 'driver' ? 'driver' : 'rider';
+      const role = b.role === 'driver' ? 'driver' : 'rider';
+      checkRoomFor(trip, role, pid);
+      p.role = role;
+      if (role === 'driver') p.seats ??= 4;
     }
+    if ('seats' in b && p.role === 'driver') p.seats = cleanSeats(b.seats);
     await touch(trip);
     return [200, { trip }];
   }],
@@ -139,15 +157,16 @@ const routes = [
   // compute the plan
   ['POST', /^\/api\/trips\/([\w-]+)\/plan$/, async (b, [id]) => {
     const trip = await getTrip(id);
-    const driver = trip.participants.find((p) => p.role === 'driver');
-    if (!driver) throw new HttpError(400, 'Someone needs to join as the driver.');
+    const drivers = trip.participants.filter((p) => p.role === 'driver');
+    if (!drivers.length) throw new HttpError(400, 'Someone needs to join as a driver.');
     const riders = trip.participants.filter((p) => p.role === 'rider');
     try {
       trip.plan = await planTrip(
         {
-          driver,
+          drivers,
           riders,
           destination: trip.destination,
+          stops: trip.stops || [],
           departAfter: trip.departAfter,
           priority: trip.priority,
         },

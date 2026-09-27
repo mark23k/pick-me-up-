@@ -1,6 +1,6 @@
-// Pickup planner: decides where each rider should get off public transit and
-// in what order the driver collects them, so the whole group is together
-// (and at the destination) as early as possible.
+// Pickup planner: decides where each rider should get off public transit,
+// which car collects them and in what order, so the whole group reaches the
+// destination (via any stops on the way) as early as possible.
 //
 // Pipeline
 //   1. For each rider, fetch transit itineraries toward the driver and toward
@@ -9,17 +9,29 @@
 //      own location is always a candidate too ("driver comes to you").
 //   2. Prune to the most promising, geographically spread candidates.
 //   3. One OSRM duration matrix between driver, destination and all candidates.
-//   4. For every rider order, dynamic programming over candidates with
-//      Pareto labels (time, driving) finds the plan minimising
-//      finalArrival + lambda * drivingTime.
+//   4. For every driver and every group of riders that fits in their car, try
+//      every rider order with dynamic programming over candidates (Pareto
+//      labels of time vs driving). Each car's route is: pickups, then the
+//      trip's stops in order, then the destination, so pickups lean toward
+//      where the group is heading. Then choose the split of riders between
+//      cars minimising  average rider arrival + lambda * extra driving
+//      + a moderate cost for each rider minute spent on transit.
 //   5. Build human instructions; re-plan riders who would wait long so they
 //      can leave home later.
 
 const MAX_RIDERS = 6;
+const MAX_DRIVERS = 4;
+const MAX_STOPS = 3; // stops on the way, visited after all pickups
+const DEFAULT_SEATS = 4;
+const MAX_SEATS = 6;
 const MAX_MATRIX_POINTS = 100;
 const PICKUP_BUFFER_S = 120; // time to pull over and get in
 const LONG_WAIT_S = 8 * 60; // re-plan rider if they'd wait longer than this
 const LABELS_PER_NODE = 8;
+// Cost of a rider's minute on buses/trains before pickup, relative to a minute of arrival
+// time. Low enough that meeting at a stop still wins when it saves real driving, high
+// enough that nobody rides two hours to reach a car that could have come to them.
+const RIDER_TRANSIT_WEIGHT = 0.25;
 
 const PRIORITY_WEIGHTS = {
   fastest: 0.1, // 10 min of driving is worth 1 min of group time
@@ -117,6 +129,7 @@ function extractCandidates(rider, itineraries, departAfterMs) {
           lat: s.lat,
           lon: s.lon,
           arrival,
+          depart: t(it.startTime),
           itinerary: it,
           legIndex,
           stopIndex,
@@ -129,9 +142,10 @@ function extractCandidates(rider, itineraries, departAfterMs) {
 
 // ---------- step 2: pruning ----------
 
-function pruneCandidates(cands, { driverOrigin, destination, departAfterMs, limit }) {
+function pruneCandidates(cands, { driverOrigins, destination, departAfterMs, limit }) {
   const score = (c) => {
-    const meet = Math.max(c.arrival, departAfterMs + estimateDrive(driverOrigin, c) * 1000);
+    const reach = Math.min(...driverOrigins.map((o) => estimateDrive(o, c)));
+    const meet = Math.max(c.arrival, departAfterMs + reach * 1000);
     const onward = destination ? estimateDrive(c, destination) * 1000 : 0;
     return meet + onward;
   };
@@ -161,18 +175,20 @@ function* permutations(arr) {
   }
 }
 
+/** Keep labels not beaten on both time and cost (lambda * driving + rider transit penalty). */
 function paretoPrune(labels, lambda) {
-  labels.sort((a, b) => a.time - b.time || a.drive - b.drive);
+  const cost = (l) => lambda * l.drive + l.pen;
+  labels.sort((a, b) => a.time - b.time || cost(a) - cost(b));
   const out = [];
-  let bestDrive = Infinity;
+  let best = Infinity;
   for (const l of labels) {
-    if (l.drive < bestDrive - 1e-6) {
+    if (cost(l) < best - 1e-6) {
       out.push(l);
-      bestDrive = l.drive;
+      best = cost(l);
     }
   }
   if (out.length > LABELS_PER_NODE) {
-    out.sort((a, b) => a.time + lambda * a.drive - (b.time + lambda * b.drive));
+    out.sort((a, b) => a.time + cost(a) - (b.time + cost(b)));
     out.length = LABELS_PER_NODE;
   }
   return out;
@@ -189,20 +205,22 @@ function paretoPrune(labels, lambda) {
  * @param {number} p.lambda      weight of driving seconds vs arrival seconds
  * @param {number} [p.traffic]   multiplier applied to matrix durations
  * @param {number} [p.bufferS]   stop time per pickup
- * @returns sorted list of solutions {score, finalTime, drive, picks:[{rider, cand, driverArrive, pickupAt}]}
+ * @param {number} [p.mu]        weight of rider minutes on transit (cand.arrival - cand.depart)
+ * @returns sorted list of solutions {score, finalTime, drive, pen, picks:[{rider, cand, driverArrive, pickupAt}]}
  */
-function optimize({ riders, matrix, startIdx, destIdx, t0, lambda, traffic = 1, bufferS = PICKUP_BUFFER_S }) {
+function optimize({ riders, matrix, startIdx, destIdx, t0, lambda, traffic = 1, bufferS = PICKUP_BUFFER_S, mu = 0 }) {
   const dur = (i, j) => (i === j ? 0 : matrix[i][j] == null ? null : matrix[i][j] * traffic * 1000);
   const buffer = bufferS * 1000;
   const solutions = [];
   const order0 = riders.map((_, i) => i);
 
   for (const order of permutations(order0)) {
-    let labels = [{ time: t0, drive: 0, at: startIdx, parent: null, pick: null }];
+    let labels = [{ time: t0, drive: 0, pen: 0, at: startIdx, parent: null, pick: null }];
     for (const r of order) {
       const next = [];
       for (const cand of riders[r].cands) {
         const here = [];
+        const pen = cand.depart != null ? mu * Math.max(0, cand.arrival - cand.depart) : 0;
         for (const L of labels) {
           const d = dur(L.at, cand.idx);
           if (d == null) continue;
@@ -215,6 +233,7 @@ function optimize({ riders, matrix, startIdx, destIdx, t0, lambda, traffic = 1, 
           here.push({
             time: pickupAt,
             drive: L.drive + d,
+            pen: L.pen + pen,
             at: cand.idx,
             parent: L,
             pick: { rider: r, cand, driverArrive, pickupAt },
@@ -238,7 +257,7 @@ function optimize({ riders, matrix, startIdx, destIdx, t0, lambda, traffic = 1, 
       const picks = [];
       for (let x = L; x.pick; x = x.parent) picks.unshift(x.pick);
       if (picks.length !== riders.length) continue;
-      solutions.push({ score: finalTime + lambda * drive, finalTime, drive, picks });
+      solutions.push({ score: finalTime + lambda * drive + L.pen, finalTime, drive, pen: L.pen, picks });
     }
   }
   solutions.sort((a, b) => a.score - b.score);
@@ -340,43 +359,83 @@ const iso = (ms) => new Date(ms).toISOString();
 
 // ---------- orchestration ----------
 
+const seatsOf = (d) => Math.min(MAX_SEATS, Math.max(1, Math.round(Number(d.seats) || DEFAULT_SEATS)));
+const sameSpot = (a, b) => a && b && haversine(a, b) < 50;
+
+/** Every way to give each rider a car without going over its seats: arrays of driver indices. */
+function* assignments(nRiders, seats) {
+  const load = seats.map(() => 0);
+  const pick = [];
+  function* go(r) {
+    if (r === nRiders) {
+      yield pick.slice();
+      return;
+    }
+    for (let d = 0; d < seats.length; d++) {
+      if (load[d] >= seats[d]) continue;
+      load[d]++;
+      pick.push(d);
+      yield* go(r + 1);
+      pick.pop();
+      load[d]--;
+    }
+  }
+  yield* go(0);
+}
+
 /**
  * @param {object} input
- * @param {{id,name,place:{lat,lon,label}}} input.driver
+ * @param {Array<{id,name,seats?,place:{lat,lon,label}}>} input.drivers  (or a single input.driver)
  * @param {Array<{id,name,place:{lat,lon,label}}>} input.riders
  * @param {{type:'driverStart'|'custom'|'none', place?:{lat,lon,label}}} input.destination
+ * @param {Array<{lat,lon,label}>} [input.stops]  stops on the way, after the pickups
  * @param {string|Date} [input.departAfter]
  * @param {'fastest'|'balanced'|'lessDriving'} [input.priority]
  * @param {number} [input.trafficFactor]
  * @param {object} providers - see providers.js
  */
 async function planTrip(input, providers) {
-  const { driver, riders } = input;
-  if (!driver?.place) throw new Error('The driver has not set a location yet.');
+  const drivers = input.drivers || (input.driver ? [input.driver] : []);
+  const { riders } = input;
+  if (!drivers.length) throw new Error('Someone needs to join as a driver.');
   if (!riders.length) throw new Error('Add at least one rider.');
-  const missing = riders.filter((r) => !r.place).map((r) => r.name);
+  const missing = [...drivers, ...riders].filter((p) => !p.place).map((p) => p.name);
   if (missing.length) throw new Error(`Waiting for location from: ${missing.join(', ')}`);
   if (riders.length > MAX_RIDERS) throw new Error(`At most ${MAX_RIDERS} riders per trip.`);
+  if (drivers.length > MAX_DRIVERS) throw new Error(`At most ${MAX_DRIVERS} drivers per trip.`);
+  const seats = drivers.map(seatsOf);
+  const totalSeats = seats.reduce((a, b) => a + b, 0);
+  if (totalSeats < riders.length) {
+    throw new Error(
+      `Not enough seats: ${riders.length} people need a ride but the car${drivers.length > 1 ? 's have' : ' has'} ${totalSeats} free seat${totalSeats === 1 ? '' : 's'}. Drivers can change their seats under Your location.`,
+    );
+  }
 
   const t0 = Math.max(Date.now(), input.departAfter ? Date.parse(input.departAfter) : 0);
   const lambda = PRIORITY_WEIGHTS[input.priority] ?? PRIORITY_WEIGHTS.balanced;
   const traffic = input.trafficFactor || 1.2;
   const notes = [];
 
-  const dest =
-    input.destination?.type === 'custom' && input.destination.place
-      ? { ...input.destination.place }
-      : input.destination?.type === 'none'
-        ? null
-        : { ...driver.place, label: driver.place.label || 'Back to start' };
+  // Where every car goes after its pickups: the stops in order, then the destination.
+  const tripStops = (input.stops || []).slice(0, MAX_STOPS).map((s) => ({ ...s, label: s.label || 'Stop' }));
+  const destType = input.destination?.type === 'custom' && input.destination.place ? 'custom' : input.destination?.type || 'driverStart';
+  const sharedDest = destType === 'custom' ? { ...input.destination.place } : null;
+  // "driverStart" (older trips): each car goes back to its own start.
+  const finalFor = (d) => (destType === 'custom' ? sharedDest : destType === 'none' ? null : { ...d.place, label: d.place.label || 'Back to start' });
+  const heading = tripStops[0] || sharedDest; // where the group heads after pickups
 
-  // 1. transit itineraries per rider (toward driver + toward destination)
-  const targets = [driver.place];
-  if (dest && haversine(dest, driver.place) > 2000) targets.push(dest);
+  // 1. transit itineraries per rider: toward the nearest drivers and toward where the group is heading
   const itinsPerRider = await Promise.all(
     riders.map(async (r) => {
+      const targets = [...drivers]
+        .sort((a, b) => haversine(r.place, a.place) - haversine(r.place, b.place))
+        .slice(0, 2)
+        .map((d) => d.place);
+      if (heading) targets.push(heading);
+      else if (destType === 'driverStart') targets.push(drivers[0].place);
+      const distinct = targets.filter((p, i) => !targets.slice(0, i).some((q) => haversine(p, q) < 2000));
       const results = await Promise.all(
-        targets.map((to) =>
+        distinct.map((to) =>
           providers.transitPlan(r.place, to, { time: new Date(t0), count: 5 }).catch((e) => {
             notes.push(`Transit lookup failed for ${r.name}: ${e.message}`);
             return [];
@@ -387,25 +446,33 @@ async function planTrip(input, providers) {
     }),
   );
 
-  // 2. candidates
-  const perRiderLimit = Math.max(4, Math.min(24, Math.floor((MAX_MATRIX_POINTS - 2) / riders.length)));
-  const riderCands = riders.map((r, i) => {
-    const all = extractCandidates(r, itinsPerRider[i], t0);
-    if (all.length === 1) notes.push(`No public transit found for ${r.name} at this time — the driver will pick them up at their location.`);
-    return pruneCandidates(all, { driverOrigin: driver.place, destination: dest, departAfterMs: t0, limit: perRiderLimit });
+  // 2. point list: drivers, stops, destination, then candidates (shared stops get one index)
+  const points = drivers.map((d) => d.place);
+  const pointIdx = (p) => {
+    const found = points.findIndex((q) => sameSpot(q, p));
+    if (found >= 0) return found;
+    points.push(p);
+    return points.length - 1;
+  };
+  const chains = drivers.map((d, di) => {
+    const fin = finalFor(d);
+    const chain = [...tripStops, ...(fin ? [fin] : [])];
+    return chain.map((p) => (fin === p && destType === 'driverStart' ? di : pointIdx(p)));
   });
 
-  // 3. point list (shared stops across riders get one index) + matrix
-  const points = [driver.place];
-  const indexByKey = new Map([['driver', 0]]);
-  let destIdx = null;
-  if (dest) {
-    if (dest.lat === driver.place.lat && dest.lon === driver.place.lon) destIdx = 0;
-    else {
-      destIdx = points.length;
-      points.push(dest);
-    }
-  }
+  const fixed = points.length;
+  const perRiderLimit = Math.max(4, Math.min(24, Math.floor((MAX_MATRIX_POINTS - fixed) / riders.length)));
+  const riderCands = riders.map((r, i) => {
+    const all = extractCandidates(r, itinsPerRider[i], t0);
+    if (all.length === 1) notes.push(`No public transit found for ${r.name} at this time, so a driver will pick them up at their location.`);
+    return pruneCandidates(all, {
+      driverOrigins: drivers.map((d) => d.place),
+      destination: heading,
+      departAfterMs: t0,
+      limit: perRiderLimit,
+    });
+  });
+  const indexByKey = new Map();
   for (const cands of riderCands) {
     for (const c of cands) {
       if (!indexByKey.has(c.key)) {
@@ -416,179 +483,279 @@ async function planTrip(input, providers) {
     }
   }
   const matrix = await providers.driveMatrix(points);
+  const dur = (i, j) => (i === j ? 0 : matrix[i][j] == null ? null : matrix[i][j] * traffic * 1000);
 
-  // 4. optimise
-  const solutions = optimize({
-    riders: riderCands.map((cands) => ({ cands })),
-    matrix,
-    startIdx: 0,
-    destIdx,
-    t0,
-    lambda,
-    traffic,
+  // time and driving after the last pickup: first chain point onward
+  const tails = chains.map((chain) => {
+    let s = 0;
+    for (let i = 1; i < chain.length; i++) s += dur(chain[i - 1], chain[i]) ?? Infinity;
+    return s;
   });
-  if (!solutions.length) throw new Error('Could not find a drivable plan — check that everyone is in a reachable place.');
-  const best = solutions[0];
+  const direct = drivers.map((_, di) => (chains[di].length ? (dur(di, chains[di][0]) ?? Infinity) + tails[di] : 0));
 
-  // 5. driver timeline
-  const dur = (i, j) => (i === j ? 0 : matrix[i][j] * traffic * 1000);
+  // 3. best routes for every (driver, group of riders)
+  const memo = new Map();
+  const solve = (di, members) => {
+    const key = `${di}:${members.join(',')}`;
+    if (memo.has(key)) return memo.get(key);
+    let sols;
+    if (!members.length) {
+      sols = [{ picks: [], end: t0 + direct[di], drive: direct[di], pen: 0, extra: 0 }];
+    } else {
+      sols = optimize({
+        riders: members.map((r) => ({ cands: riderCands[r] })),
+        matrix,
+        startIdx: di,
+        destIdx: chains[di][0] ?? null,
+        t0,
+        lambda,
+        traffic,
+        mu: RIDER_TRANSIT_WEIGHT,
+      })
+        .slice(0, 5)
+        .map((s) => {
+          const drive = s.drive + tails[di];
+          return {
+            picks: s.picks.map((p) => ({ ...p, rider: members[p.rider] })),
+            end: s.finalTime + tails[di],
+            drive,
+            pen: s.pen,
+            extra: drive - direct[di],
+          };
+        })
+        .filter((s) => Number.isFinite(s.end));
+    }
+    memo.set(key, sols);
+    return sols;
+  };
+  // Score = when riders arrive on average + lambda * extra driving + rider transit penalty.
+  // With one car this matches the per-car optimiser; with several it stops a rider being
+  // sent the long way round just because another car sets the latest arrival anyway.
+  const combine = (perDriver) => {
+    const active = perDriver.filter((s) => s.picks.length);
+    const end = Math.max(...active.map((s) => s.end));
+    const meanEnd = active.reduce((a, s) => a + s.end * s.picks.length, 0) / riders.length;
+    const extra = perDriver.reduce((a, s) => a + s.extra, 0);
+    const pen = perDriver.reduce((a, s) => a + s.pen, 0);
+    return { perDriver, end, extra, score: meanEnd + lambda * extra + pen };
+  };
+
+  // 4. choose which car takes whom
+  const combos = [];
+  for (const assign of assignments(riders.length, seats)) {
+    const groups = drivers.map((_, di) => assign.flatMap((d, r) => (d === di ? [r] : [])));
+    const options = groups.map((g, di) => solve(di, g));
+    if (options.some((o) => !o.length)) continue;
+    combos.push({ groups, options, ...combine(options.map((o) => o[0])) });
+  }
+  if (!combos.length) throw new Error('Could not find a drivable plan. Check that everyone is in a reachable place.');
+  combos.sort((a, b) => a.score - b.score);
+  const best = combos[0];
+
+  // alternatives: other splits between cars, and other pickup spots for the chosen split
+  const variants = combos.slice(0, 12);
+  best.options.forEach((opts, di) =>
+    opts.slice(1).forEach((alt) => variants.push(combine(best.options.map((o, j) => (j === di ? alt : o[0]))))),
+  );
+  variants.sort((a, b) => a.score - b.score);
+
+  // 5. per-car timelines and rider instructions
   const buffer = PICKUP_BUFFER_S * 1000;
+  const carPlans = await Promise.all(
+    drivers.map(async (driver, di) => {
+      const sol = best.perDriver[di];
+      const chain = chains[di];
+      const fin = finalFor(driver);
 
-  // group consecutive picks at the same spot into one stop
-  const stops = [];
-  for (const p of best.picks) {
-    const last = stops.at(-1);
-    if (last && last.idx === p.cand.idx) {
-      last.riders.push(p);
-      last.pickupAt = Math.max(last.pickupAt, p.pickupAt);
-    } else stops.push({ idx: p.cand.idx, cand: p.cand, riders: [p], pickupAt: p.pickupAt });
-  }
-  // "ready" = when the driver needs to be there; pickup finishes one buffer later.
-  // Leave so we reach the first stop exactly when it is ready, not earlier.
-  for (const s of stops) s.readyAt = s.pickupAt - buffer;
-  const leaveAt = Math.max(t0, stops[0].readyAt - dur(0, stops[0].idx));
-  let clock = leaveAt;
-  let at = 0;
-  for (const s of stops) {
-    s.driverEta = clock + dur(at, s.idx);
-    clock = s.pickupAt;
-    at = s.idx;
-  }
-  const destEta = destIdx != null ? clock + dur(at, destIdx) : null;
-
-  let route = null;
-  try {
-    const routePts = [driver.place, ...stops.map((s) => s.cand), ...(dest ? [dest] : [])];
-    route = await providers.driveRoute(routePts);
-  } catch (e) {
-    notes.push(`Could not draw the driving route: ${e.message}`);
-  }
-
-  // rider instructions (re-plan long waits so riders can leave later)
-  const riderOut = await Promise.all(
-    best.picks.map(async (p) => {
-      const rider = riders[p.rider];
-      const c = p.cand;
-      const stop = stops.find((s) => s.riders.includes(p));
-      const pickupAt = stop.pickupAt;
-      const meetAt = Math.max(stop.driverEta, stop.readyAt); // rider should be there by this time
-      const base = {
-        participantId: rider.id,
-        name: rider.name,
-        origin: rider.place,
-        pickup: {
-          name: c.kind === 'home' ? rider.place.label || 'Your location' : c.name,
-          stopCode: c.stopCode || null,
-          lat: c.lat,
-          lon: c.lon,
-          kind: c.kind,
-          driverEta: iso(stop.driverEta),
-          meetAt: iso(meetAt),
-          pickupAt: iso(pickupAt),
-        },
-      };
-      if (c.kind === 'home') {
-        return {
-          ...base,
-          mode: 'home',
-          leaveAt: null,
-          arriveAt: null,
-          waitMinutes: 0,
-          steps: [{ type: 'home', text: 'Stay where you are — the driver comes to you.' }],
-          geometry: [],
-          mapsUrl: null,
-        };
+      // group consecutive picks at the same spot into one stop
+      const stops = [];
+      for (const p of sol.picks) {
+        const last = stops.at(-1);
+        if (last && last.idx === p.cand.idx) {
+          last.riders.push(p);
+          last.pickupAt = Math.max(last.pickupAt, p.pickupAt);
+        } else stops.push({ idx: p.cand.idx, cand: p.cand, riders: [p], pickupAt: p.pickupAt });
       }
-      let plan = itinerarySteps(c.itinerary, {
-        legIndex: c.legIndex,
-        stopIndex: c.stopIndex,
-        pickupName: c.name,
-        homeLabel: rider.place.label,
+      // "ready" = when the driver needs to be there; pickup finishes one buffer later.
+      // Leave so we reach the first stop exactly when it is ready, not earlier.
+      for (const s of stops) s.readyAt = s.pickupAt - buffer;
+      const leaveAt = stops.length ? Math.max(t0, stops[0].readyAt - dur(di, stops[0].idx)) : t0;
+      let clock = leaveAt;
+      let at = di;
+      for (const s of stops) {
+        s.driverEta = clock + dur(at, s.idx);
+        clock = s.pickupAt;
+        at = s.idx;
+      }
+      const chainEtas = chain.map((idx) => {
+        clock += dur(at, idx);
+        at = idx;
+        return clock;
       });
-      if (meetAt - c.arrival > LONG_WAIT_S) {
-        try {
-          const later = await providers.transitPlan(rider.place, c, {
-            time: new Date(meetAt),
-            arriveBy: true,
-            count: 3,
-          });
-          const fits = later
-            .filter((it) => t(it.endTime) <= meetAt && it.legs.some(isTransitLeg))
-            .sort((a, b) => t(b.startTime) - t(a.startTime))[0];
-          if (fits && t(fits.startTime) > t(plan.leaveAt)) {
-            plan = itinerarySteps(fits, { pickupName: c.name, homeLabel: rider.place.label });
+      const lastPickupAt = stops.length ? stops.at(-1).pickupAt : null;
+      const endAt = chainEtas.length ? chainEtas.at(-1) : lastPickupAt;
+
+      const waypointPlaces = tripStops;
+      const waypoints = waypointPlaces.map((p, i) => ({ label: p.label, lat: p.lat, lon: p.lon, eta: iso(chainEtas[i]), wazeUrl: wazeUrl(p) }));
+      const destination = fin ? { ...fin, eta: iso(chainEtas.at(-1)), wazeUrl: wazeUrl(fin) } : null;
+
+      // drawn in parallel with the rider re-plans below
+      const routePts = [driver.place, ...stops.map((s) => s.cand), ...waypointPlaces, ...(fin ? [fin] : [])];
+      const routeReq =
+        routePts.length > 1 && !(routePts.length === 2 && sameSpot(routePts[0], routePts[1]))
+          ? providers.driveRoute(routePts).catch((e) => {
+              notes.push(`Could not draw ${driver.name}'s driving route: ${e.message}`);
+              return null;
+            })
+          : Promise.resolve(null);
+
+      const riderOut = await Promise.all(
+        sol.picks.map(async (p) => {
+          const rider = riders[p.rider];
+          const c = p.cand;
+          const stop = stops.find((s) => s.riders.includes(p));
+          const pickupAt = stop.pickupAt;
+          const meetAt = Math.max(stop.driverEta, stop.readyAt); // rider should be there by this time
+          const base = {
+            participantId: rider.id,
+            name: rider.name,
+            driverId: driver.id,
+            driverName: driver.name,
+            origin: rider.place,
+            pickup: {
+              name: c.kind === 'home' ? rider.place.label || 'Your location' : c.name,
+              stopCode: c.stopCode || null,
+              lat: c.lat,
+              lon: c.lon,
+              kind: c.kind,
+              driverEta: iso(stop.driverEta),
+              meetAt: iso(meetAt),
+              pickupAt: iso(pickupAt),
+            },
+          };
+          if (c.kind === 'home') {
+            return {
+              ...base,
+              mode: 'home',
+              leaveAt: null,
+              arriveAt: null,
+              waitMinutes: 0,
+              steps: [{ type: 'home', text: 'Stay where you are. The driver comes to you.' }],
+              geometry: [],
+              mapsUrl: null,
+            };
           }
-        } catch {
-          /* keep the original plan */
-        }
-      }
-      const arrive = t(plan.arriveAt);
+          let plan = itinerarySteps(c.itinerary, {
+            legIndex: c.legIndex,
+            stopIndex: c.stopIndex,
+            pickupName: c.name,
+            homeLabel: rider.place.label,
+          });
+          if (meetAt - c.arrival > LONG_WAIT_S) {
+            try {
+              const later = await providers.transitPlan(rider.place, c, {
+                time: new Date(meetAt),
+                arriveBy: true,
+                count: 3,
+                timeoutMs: 2500,
+              });
+              const fits = later
+                .filter((it) => t(it.endTime) <= meetAt && it.legs.some(isTransitLeg))
+                .sort((a, b) => t(b.startTime) - t(a.startTime))[0];
+              if (fits && t(fits.startTime) > t(plan.leaveAt)) {
+                plan = itinerarySteps(fits, { pickupName: c.name, homeLabel: rider.place.label });
+              }
+            } catch {
+              /* keep the original plan */
+            }
+          }
+          const arrive = t(plan.arriveAt);
+          return {
+            ...base,
+            mode: 'transit',
+            leaveAt: plan.leaveAt,
+            arriveAt: plan.arriveAt,
+            waitMinutes: Math.max(0, Math.round((meetAt - arrive) / 60000)),
+            steps: plan.steps,
+            geometry: plan.geometry,
+            mapsUrl: gmapsTransitUrl(rider.place, c),
+          };
+        }),
+      );
+
+      const route = await routeReq;
+      const stopsOut = stops.map((s) => ({
+        name: s.cand.kind === 'home' ? `${riders[s.riders[0].rider].name}'s location` : s.cand.name,
+        stopCode: s.cand.stopCode || null,
+        lat: s.cand.lat,
+        lon: s.cand.lon,
+        riders: s.riders.map((p) => riders[p.rider].name),
+        eta: iso(s.driverEta),
+        pickupAt: iso(s.pickupAt),
+        wazeUrl: wazeUrl(s.cand),
+      }));
+      const mapsStops = [...stopsOut, ...waypoints];
       return {
-        ...base,
-        mode: 'transit',
-        leaveAt: plan.leaveAt,
-        arriveAt: plan.arriveAt,
-        waitMinutes: Math.max(0, Math.round((meetAt - arrive) / 60000)),
-        steps: plan.steps,
-        geometry: plan.geometry,
-        mapsUrl: gmapsTransitUrl(rider.place, c),
+        driver: {
+          participantId: driver.id,
+          name: driver.name,
+          origin: driver.place,
+          seats: seats[di],
+          leaveAt: iso(leaveAt),
+          lastPickupAt: lastPickupAt ? iso(lastPickupAt) : null,
+          endAt: endAt ? iso(endAt) : null,
+          driveMinutes: Math.round((sol.drive || 0) / 60000),
+          stops: stopsOut,
+          waypoints,
+          destination,
+          googleMapsUrl: mapsStops.length || fin ? gmapsDriveUrl(driver.place, mapsStops, fin) : null,
+          route: route ? { coordinates: route.coordinates, km: +(route.distance / 1000).toFixed(1) } : null,
+        },
+        riders: riderOut,
       };
     }),
   );
 
-  // alternatives: next-best distinct pickup plans
   const seen = new Set();
   const alternatives = [];
-  for (const s of solutions) {
-    const sig = s.picks.map((p) => p.cand.key).join('|');
+  const signature = (c) => c.perDriver.map((s, di) => s.picks.map((p) => `${p.rider}@${di}:${p.cand.key}`).join('|')).join('/');
+  for (const v of variants) {
+    const sig = signature(v);
     if (seen.has(sig)) continue;
     seen.add(sig);
+    const activeDrive = v.perDriver.reduce((a, s) => a + (s.picks.length ? s.drive : 0), 0);
     alternatives.push({
-      finalTime: iso(s.finalTime),
-      driveMinutes: Math.round(s.drive / 60000),
-      extraMinutes: Math.round((s.finalTime - best.finalTime) / 60000),
-      pickups: s.picks.map((p) => ({
-        rider: riders[p.rider].name,
-        place: p.cand.kind === 'home' ? `${riders[p.rider].name}'s location` : p.cand.name,
-      })),
+      finalTime: iso(v.end),
+      driveMinutes: Math.round(activeDrive / 60000),
+      extraMinutes: Math.round((v.end - best.end) / 60000),
+      pickups: v.perDriver.flatMap((s, di) =>
+        s.picks.map((p) => ({
+          rider: riders[p.rider].name,
+          driver: drivers[di].name,
+          place: p.cand.kind === 'home' ? `${riders[p.rider].name}'s location` : p.cand.name,
+        })),
+      ),
     });
     if (alternatives.length >= 4) break;
   }
   alternatives.shift(); // first one is the chosen plan
 
-  const stopsOut = stops.map((s) => ({
-    name: s.cand.kind === 'home' ? `${riders[s.riders[0].rider].name}'s location` : s.cand.name,
-    stopCode: s.cand.stopCode || null,
-    lat: s.cand.lat,
-    lon: s.cand.lon,
-    riders: s.riders.map((p) => riders[p.rider].name),
-    eta: iso(s.driverEta),
-    pickupAt: iso(s.pickupAt),
-    wazeUrl: wazeUrl(s.cand),
-  }));
+  const driversOut = carPlans.map((c) => c.driver);
+  const active = driversOut.filter((d) => d.stops.length);
+  const riderOut = riders.map((r) => carPlans.flatMap((c) => c.riders).find((x) => x.participantId === r.id));
 
   return {
     computedAt: new Date().toISOString(),
     departAfter: iso(t0),
     priority: input.priority || 'balanced',
     summary: {
-      driverLeaveAt: iso(leaveAt),
-      lastPickupAt: iso(stops.at(-1).pickupAt),
-      finalArrival: destEta ? iso(destEta) : iso(stops.at(-1).pickupAt),
-      driveMinutes: Math.round(best.drive / 60000),
+      driverLeaveAt: iso(Math.min(...active.map((d) => Date.parse(d.leaveAt)))),
+      lastPickupAt: iso(Math.max(...active.map((d) => Date.parse(d.lastPickupAt)))),
+      finalArrival: iso(best.end),
+      driveMinutes: active.reduce((a, d) => a + d.driveMinutes, 0),
+      cars: active.length,
     },
-    driver: {
-      participantId: driver.id,
-      name: driver.name,
-      origin: driver.place,
-      leaveAt: iso(leaveAt),
-      stops: stopsOut,
-      destination: dest ? { ...dest, eta: iso(destEta), wazeUrl: wazeUrl(dest) } : null,
-      googleMapsUrl: gmapsDriveUrl(driver.place, stopsOut, dest),
-      route: route
-        ? { coordinates: route.coordinates, km: +(route.distance / 1000).toFixed(1) }
-        : null,
-    },
+    drivers: driversOut,
     riders: riderOut,
     alternatives,
     notes,
@@ -605,4 +772,7 @@ module.exports = {
   haversine,
   PRIORITY_WEIGHTS,
   MAX_RIDERS,
+  MAX_DRIVERS,
+  MAX_STOPS,
+  MAX_SEATS,
 };

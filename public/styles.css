@@ -189,3 +189,13 @@ details[open] summary::after { content: "▴"; }
 .perm .banner { text-align: left; }
 
 [hidden] { display: none !important; }
+
+/* destination & stops */
+.chosen { margin: 6px 0 8px; font-weight: 600; }
+.stop-list { list-style: none; padding: 0; margin: 6px 0 8px; }
+.stop-list li { display: flex; align-items: center; gap: 8px; padding: 4px 0; }
+.stop-list .dot { width: 22px; height: 22px; border-radius: 50%; background: var(--line); display: inline-grid; place-items: center; font-size: .8rem; flex: none; }
+.grow { flex: 1; min-width: 0; }
+/* who goes in which car */
+.cars .car-row { display: flex; gap: 10px; justify-content: space-between; padding: 6px 0; border-top: 1px solid var(--line); }
+.cars .car-row:first-of-type { border-top: 0; }

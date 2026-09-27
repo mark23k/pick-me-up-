@@ -170,10 +170,11 @@ test('planTrip end-to-end with stubbed providers', async () => {
     { ...providers },
   );
   assert.equal(res.riders.length, 1);
-  assert.equal(res.driver.stops.length, 1);
-  assert.match(res.driver.stops[0].wazeUrl, /^https:\/\/waze\.com\/ul\?ll=/);
-  assert.ok(Date.parse(res.driver.leaveAt) >= Date.parse(res.departAfter));
-  assert.ok(Date.parse(res.summary.finalArrival) > Date.parse(res.driver.leaveAt));
+  const d = res.drivers[0];
+  assert.equal(d.stops.length, 1);
+  assert.match(d.stops[0].wazeUrl, /^https:\/\/waze\.com\/ul\?ll=/);
+  assert.ok(Date.parse(d.leaveAt) >= Date.parse(res.departAfter));
+  assert.ok(Date.parse(res.summary.finalArrival) > Date.parse(d.leaveAt));
   // the rider either stays home or gets clear bus instructions ending at the pickup
   const r = res.riders[0];
   if (r.mode === 'transit') assert.equal(r.steps.at(-1).to, r.pickup.name);
@@ -184,4 +185,132 @@ test('planTrip reports who is missing a location', async () => {
     planTrip({ driver: { id: 'd', name: 'D', place: { lat: 1, lon: 1 } }, riders: [{ id: 'r', name: 'Avi' }] }, {}),
     /Avi/,
   );
+});
+
+// ---------- destination, stops and several drivers ----------
+
+test('pickup spot leans toward the destination instead of the opposite way', () => {
+  // 0 driver, 1 destination (30 min east of driver), 2 stop east (10 min from driver, 20 to dest), 3 stop west (10 min, 40 to dest)
+  const m = [
+    [0, 1800, 600, 600],
+    [1800, 0, 1200, 2400],
+    [600, 1200, 0, 1200],
+    [600, 2400, 1200, 0],
+  ];
+  const riders = [{ cands: [{ idx: 2, arrival: T0 + 10 * MIN, key: 'east' }, { idx: 3, arrival: T0 + 10 * MIN, key: 'west' }] }];
+  const sols = optimize({ riders, matrix: m, startIdx: 0, destIdx: 1, t0: T0, lambda: 0.35, bufferS: 0 });
+  assert.equal(sols[0].picks[0].cand.key, 'east');
+});
+
+// Fake world: drive time is proportional to straight-line distance; no transit, so riders are picked up at home.
+const flatProviders = {
+  transitPlan: async () => [],
+  driveMatrix: async (points) => points.map((a) => points.map((b) => Math.round(Math.hypot(a.lat - b.lat, a.lon - b.lon) * 20000))),
+  driveRoute: async (pts) => ({ coordinates: pts.map((p) => [p.lat, p.lon]), legs: [], duration: 0, distance: 1000 }),
+};
+const at = (lat, label = '') => ({ lat, lon: 34.8, label });
+
+test('several drivers: each rider goes with the car that suits them', async () => {
+  const res = await planTrip(
+    {
+      drivers: [
+        { id: 'a', name: 'Avi', place: at(32.0, 'Avi home') },
+        { id: 'b', name: 'Bat', place: at(32.5, 'Bat home') },
+      ],
+      riders: [
+        { id: 'r1', name: 'Near Bat', place: at(32.48) },
+        { id: 'r2', name: 'Near Avi', place: at(32.03) },
+      ],
+      destination: { type: 'custom', place: at(32.3, 'Party') },
+      departAfter: new Date(T0).toISOString(),
+      trafficFactor: 1,
+    },
+    flatProviders,
+  );
+  const byName = Object.fromEntries(res.riders.map((r) => [r.name, r.driverName]));
+  assert.deepEqual(byName, { 'Near Bat': 'Bat', 'Near Avi': 'Avi' });
+  assert.equal(res.summary.cars, 2);
+  assert.ok(res.drivers.every((d) => d.destination.label === 'Party'));
+});
+
+test('a driver who is far away is left without pickups', async () => {
+  const res = await planTrip(
+    {
+      drivers: [
+        { id: 'a', name: 'Close', place: at(32.0) },
+        { id: 'b', name: 'Far', place: at(33.0) },
+      ],
+      riders: [{ id: 'r', name: 'Roni', place: at(32.02) }],
+      destination: { type: 'custom', place: at(31.9, 'Beach') },
+      departAfter: new Date(T0).toISOString(),
+      trafficFactor: 1,
+    },
+    flatProviders,
+  );
+  assert.equal(res.riders[0].driverName, 'Close');
+  assert.equal(res.drivers.find((d) => d.name === 'Far').stops.length, 0);
+  assert.equal(res.summary.cars, 1);
+});
+
+test('stops on the way come after the pickups, in order, before the destination', async () => {
+  const res = await planTrip(
+    {
+      drivers: [{ id: 'a', name: 'Avi', place: at(32.0) }],
+      riders: [{ id: 'r', name: 'Roni', place: at(32.05) }],
+      stops: [at(32.2, 'Gas'), at(32.3, 'Food')],
+      destination: { type: 'custom', place: at(32.5, 'Eilat') },
+      departAfter: new Date(T0).toISOString(),
+      trafficFactor: 1,
+    },
+    flatProviders,
+  );
+  const d = res.drivers[0];
+  assert.deepEqual(d.waypoints.map((w) => w.label), ['Gas', 'Food']);
+  const times = [d.stops[0].pickupAt, ...d.waypoints.map((w) => w.eta), d.destination.eta].map(Date.parse);
+  assert.deepEqual(times, [...times].sort((x, y) => x - y));
+  assert.equal(res.summary.finalArrival, d.destination.eta);
+});
+
+test('seats: a full car is not given more riders than it has seats', async () => {
+  const riders = [1, 2, 3].map((i) => ({ id: `r${i}`, name: `R${i}`, place: at(32.0 + i / 1000) }));
+  const res = await planTrip(
+    {
+      drivers: [
+        { id: 'a', name: 'Small car', seats: 1, place: at(32.0) },
+        { id: 'b', name: 'Van', seats: 6, place: at(32.2) },
+      ],
+      riders,
+      destination: { type: 'custom', place: at(32.4, 'Dest') },
+      departAfter: new Date(T0).toISOString(),
+      trafficFactor: 1,
+    },
+    flatProviders,
+  );
+  assert.ok(res.riders.filter((r) => r.driverName === 'Small car').length <= 1);
+  await assert.rejects(
+    planTrip({ drivers: [{ id: 'a', name: 'A', seats: 2, place: at(32) }], riders, destination: { type: 'none' } }, flatProviders),
+    /Not enough seats/,
+  );
+});
+
+test('a rider is not sent on a two-hour bus ride when the car can collect them nearby', () => {
+  // 0 driver, 1 destination (60 min), 2 rider home (5 min from driver, 62 to dest), 3 far stop on the way (30 min, 30 to dest)
+  const m = [
+    [0, 3600, 300, 1800],
+    [3600, 0, 3720, 1800],
+    [300, 3720, 0, 1900],
+    [1800, 1800, 1900, 0],
+  ];
+  const riders = [
+    {
+      cands: [
+        { idx: 2, arrival: T0, key: 'home' },
+        { idx: 3, arrival: T0 + 30 * MIN, depart: T0 - 90 * MIN, key: 'farStop' }, // 2 h on buses
+      ],
+    },
+  ];
+  const noCost = optimize({ riders, matrix: m, startIdx: 0, destIdx: 1, t0: T0, lambda: 0.35, bufferS: 0 });
+  const withCost = optimize({ riders, matrix: m, startIdx: 0, destIdx: 1, t0: T0, lambda: 0.35, bufferS: 0, mu: 0.25 });
+  assert.equal(noCost[0].picks[0].cand.key, 'farStop');
+  assert.equal(withCost[0].picks[0].cand.key, 'home');
 });
