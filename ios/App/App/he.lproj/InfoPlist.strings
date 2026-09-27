@@ -1,0 +1,2 @@
+/* iPhone system popup when the app asks for location (Hebrew) */
+"NSLocationWhenInUseUsageDescription" = "Pickup Planner משתמשת במיקום שלכם כדי למצוא את נקודת האיסוף הכי טובה. רק מי שבנסיעה רואה אותו.";
