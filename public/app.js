@@ -310,7 +310,9 @@ $share.addEventListener('click', async () => {
   const url = location.origin + `/t/${state.trip.id}`;
   if (navigator.share) {
     try {
-      await navigator.share({ title: t('appName'), text: t('shareShort'), url });
+      // One plain-text item with the link on its own line. Passing title/url separately makes
+      // iOS hand WhatsApp a binary "bplist00…" blob instead of a tappable link.
+      await navigator.share({ text: t('shareText', url) });
       return;
     } catch {
       /* cancelled */
