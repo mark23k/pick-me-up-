@@ -68,13 +68,35 @@ function getGps() {
     if (!navigator.geolocation) return reject(new Error('This device has no GPS access'));
     navigator.geolocation.getCurrentPosition(
       (p) => resolve({ lat: p.coords.latitude, lon: p.coords.longitude }),
-      (e) =>
-        reject(
-          new Error(e.code === 1 ? 'Location permission denied — search for your address instead' : 'Could not get your location'),
-        ),
+      (e) => {
+        const err = new Error(e.code === 1 ? 'Location is blocked on this phone' : 'Could not get your location');
+        err.denied = e.code === 1;
+        reject(err);
+      },
       { enableHighAccuracy: true, timeout: 15000, maximumAge: 30000 },
     );
   });
+}
+
+/** Step-by-step fix for a blocked location, for the device the user is on. */
+function locationHelp() {
+  const ua = navigator.userAgent;
+  const native = window.Capacitor?.isNativePlatform?.();
+  if (/FBAN|FBAV|Instagram|Line\//.test(ua)) {
+    return 'This in-app browser blocks location. Open the link in Safari or Chrome (⋯ menu → Open in browser).';
+  }
+  if (/iPhone|iPad|iPod/.test(ua)) {
+    return native
+      ? 'iPhone Settings → Pickup Planner → Location → While Using the App.'
+      : 'iPhone Settings → Privacy & Security → Location Services → Safari Websites → While Using the App. ' +
+          'Then in Safari tap aA → Website Settings → Location → Allow, and try again.';
+  }
+  if (/Android/.test(ua)) {
+    return native
+      ? 'Android Settings → Apps → Pickup Planner → Permissions → Location → Allow.'
+      : 'Tap the icon left of the web address → Permissions → Location → Allow. Also check that Location is on in Android Settings.';
+  }
+  return "Allow location for this site in your browser's settings, then try again.";
 }
 
 // ---------- state ----------
@@ -266,6 +288,7 @@ function myLocationCard(me) {
       </div>
       <p class="small muted" style="margin:6px 0 10px" dir="auto">${me.place ? '📍 ' + esc(me.place.label) : 'Where are you starting from?'}</p>
       <button id="gpsBtn" class="btn block">📍 Use my current location</button>
+      <div id="gpsHelp" class="banner error small" style="margin-top:10px" hidden></div>
       <form id="searchForm" class="row" style="margin-top:10px">
         <input id="searchInput" class="grow" type="search" placeholder="…or search an address, city or stop" dir="auto" autocomplete="off" aria-label="Search for a place">
         <button class="btn ghost">Search</button>
@@ -545,7 +568,13 @@ function bindTrip() {
       const { label } = await api('GET', `/api/reverse?lat=${pos.lat}&lon=${pos.lon}`);
       await setMyPlace({ ...pos, label });
     } catch (err) {
-      toast(err.message, 4000);
+      const help = q('gpsHelp');
+      if (err.denied && help) {
+        help.innerHTML = `<strong>Location is blocked.</strong> ${esc(locationHelp())}<br>Or search for your address below.`;
+        help.hidden = false;
+      } else {
+        toast(err.message, 4000);
+      }
       b.disabled = false;
       b.textContent = '📍 Use my current location';
     }
