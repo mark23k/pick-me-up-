@@ -57,12 +57,12 @@ test/           node:test unit tests
 
 ```bash
 npm install                                   # Capacitor tooling (dev only; the server itself has no deps)
-APP_URL=https://your-host.example npx cap sync   # point the apps at your deployed server
+npx cap sync                                  # apps load https://pickup-planner.netlify.app
 npm run ios                                   # opens Xcode    → pick a device → ▶ Run
 npm run android                               # opens Android Studio → ▶ Run
 ```
 
-Without `APP_URL` the apps point at `http://localhost:3000`, which is useful for the iOS simulator while `npm start` is running. For the Android emulator, also run `adb reverse tcp:3000 tcp:3000`. Real phones need a public HTTPS `APP_URL`.
+To test against a local server instead, run `APP_URL=http://localhost:3000 npx cap sync` while `npm start` is running (iOS simulator). For the Android emulator, also run `adb reverse tcp:3000 tcp:3000`. Real phones need a public HTTPS `APP_URL`.
 
 - App id: `com.pickupplanner.app`. Change it in `capacitor.config.js` before the first store upload.
 - Icons and splash screens are generated from `assets/icon.png` with `npx @capacitor/assets generate --ios --android`.
