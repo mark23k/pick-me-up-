@@ -1,7 +1,7 @@
 // Offline shell: app files are served network-first with a cache fallback.
 // API calls always go to the network (plans must be live).
-const CACHE = 'pickup-v1';
-const SHELL = ['/', '/app.js', '/styles.css', '/manifest.webmanifest', '/icons/icon.svg'];
+const CACHE = 'pickup-v2';
+const SHELL = ['/', '/app.js', '/i18n.js', '/styles.css', '/manifest.webmanifest', '/icons/icon.svg'];
 
 self.addEventListener('install', (e) => {
   e.waitUntil(caches.open(CACHE).then((c) => c.addAll(SHELL)).then(() => self.skipWaiting()));

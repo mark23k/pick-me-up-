@@ -141,12 +141,12 @@ input:focus-visible, button:focus-visible, a:focus-visible { outline: 3px solid 
 .leave .count { color: var(--muted); font-size: .9rem; }
 
 .timeline { list-style: none; margin: 12px 0 0; padding: 0; }
-.timeline li { position: relative; padding: 0 0 16px 34px; }
-.timeline li::before { content: ""; position: absolute; left: 11px; top: 26px; bottom: 0; border-left: 2px dashed var(--line); }
-.timeline li.ride::before { border-left: 3px solid var(--brand); left: 10px; }
+.timeline li { position: relative; padding-block: 0 16px; padding-inline: 34px 0; }
+.timeline li::before { content: ""; position: absolute; inset-inline-start: 11px; top: 26px; bottom: 0; border-inline-start: 2px dashed var(--line); }
+.timeline li.ride::before { border-inline-start: 3px solid var(--brand); inset-inline-start: 10px; }
 .timeline li:last-child::before { display: none; }
 .timeline .dot {
-  position: absolute; left: 0; top: 0; width: 24px; height: 24px; border-radius: 50%;
+  position: absolute; inset-inline-start: 0; top: 0; width: 24px; height: 24px; border-radius: 50%;
   display: grid; place-items: center; font-size: 13px; background: var(--brand-soft);
 }
 .timeline .t { font-weight: 700; font-variant-numeric: tabular-nums; margin-inline-end: 6px; }
@@ -185,8 +185,8 @@ details[open] summary::after { content: "▴"; }
 /* first-open permission screen */
 .perm { text-align: center; }
 .perm-icon { font-size: 3rem; line-height: 1; margin: 6px 0 10px; }
-.perm p { text-align: left; }
-.perm .banner { text-align: left; }
+.perm p { text-align: start; }
+.perm .banner { text-align: start; }
 
 [hidden] { display: none !important; }
 
@@ -199,3 +199,9 @@ details[open] summary::after { content: "▴"; }
 /* who goes in which car */
 .cars .car-row { display: flex; gap: 10px; justify-content: space-between; padding: 6px 0; border-top: 1px solid var(--line); }
 .cars .car-row:first-of-type { border-top: 0; }
+
+/* top bar buttons (language + share) */
+.top-actions { display: flex; gap: 8px; align-items: center; }
+/* Hebrew: a font with good Hebrew letterforms, and keep times / line numbers left-to-right */
+:root[lang="he"] body { font-family: "Rubik", system-ui, -apple-system, "Segoe UI", Arial, sans-serif; }
+.t, .when, .line-no, .summary b { unicode-bidi: isolate; direction: ltr; }

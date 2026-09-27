@@ -1,10 +1,10 @@
 <!doctype html>
-<html lang="en">
+<html lang="he" dir="rtl">
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
   <title>Pickup Planner</title>
-  <meta name="description" content="Find the best bus stop to pick up your friends anywhere in Israel.">
+  <meta name="description" content="אוספים את החברים בתחנה הנכונה: מוצאים איפה כדאי לרדת מהאוטובוס כדי שכולם ייפגשו מוקדם, בכל הארץ.">
   <meta name="theme-color" content="#0f766e">
   <link rel="manifest" href="/manifest.webmanifest">
   <link rel="icon" href="/icons/icon.svg" type="image/svg+xml">
@@ -14,6 +14,8 @@
   <meta name="apple-mobile-web-app-status-bar-style" content="default">
   <meta name="apple-mobile-web-app-title" content="Pickup">
   <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/leaflet/1.9.4/leaflet.min.css">
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Rubik:wght@400;600;700;800&display=swap">
   <link rel="stylesheet" href="/styles.css">
 </head>
 <body>
@@ -22,11 +24,15 @@
       <img src="/icons/icon.svg" alt="" width="28" height="28">
       <span>Pickup Planner</span>
     </a>
-    <button id="shareBtn" class="btn ghost small" hidden>Share link</button>
+    <div class="top-actions">
+      <button id="shareBtn" class="btn ghost small" hidden>שיתוף קישור</button>
+      <button id="langBtn" class="btn ghost small" lang="en">English</button>
+    </div>
   </header>
   <main id="app" aria-live="polite"></main>
   <div id="toast" role="status" hidden></div>
   <script src="https://cdnjs.cloudflare.com/ajax/libs/leaflet/1.9.4/leaflet.min.js" defer></script>
+  <script src="/i18n.js" defer></script>
   <script src="/app.js" defer></script>
 </body>
 </html>

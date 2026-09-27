@@ -289,7 +289,7 @@ test('seats: a full car is not given more riders than it has seats', async () =>
   assert.ok(res.riders.filter((r) => r.driverName === 'Small car').length <= 1);
   await assert.rejects(
     planTrip({ drivers: [{ id: 'a', name: 'A', seats: 2, place: at(32) }], riders, destination: { type: 'none' } }, flatProviders),
-    /Not enough seats/,
+    (e) => e.code === 'notEnoughSeats' && /Not enough seats/.test(e.message),
   );
 });
 
@@ -329,7 +329,10 @@ test('slow timetable lookups give one clear note instead of an error per lookup'
     },
     { ...flatProviders, transitPlan: async () => { throw new Error('The operation was aborted due to timeout'); } },
   );
-  assert.deepEqual(res.notes, ['Bus times for Roni and Dana were slow to load, so some bus options may be missing. Tap Recalculate to try again.']);
+  assert.equal(res.notes.length, 1);
+  assert.equal(res.notes[0].code, 'slowBus');
+  assert.deepEqual(res.notes[0].params, { names: ['Roni', 'Dana'] });
+  assert.equal(res.notes[0].text, 'Bus times for Roni and Dana were slow to load, so some bus options may be missing. Tap Recalculate to try again.');
 });
 
 // ---------- arrive-by ----------
@@ -362,7 +365,7 @@ test('arrive by: every car reaches the destination right on time, leaving as lat
   }
   assert.equal(res.summary.finalArrival, arriveBy);
   assert.equal(res.arriveBy, arriveBy);
-  assert.ok(!res.notes.some((n) => /can't all get there/.test(n)));
+  assert.ok(!res.notes.some((n) => n.code === 'cantMakeIt'));
 });
 
 test("arrive by: says so when the group can't make it in time", async () => {
@@ -377,7 +380,8 @@ test("arrive by: says so when the group can't make it in time", async () => {
     },
     flatProviders,
   );
-  assert.match(res.notes[0], /can't all get there by .* earliest everyone can arrive/);
+  assert.equal(res.notes[0].code, 'cantMakeIt');
+  assert.match(res.notes[0].text, /can't all get there by .* earliest everyone can arrive/);
   await assert.rejects(
     planTrip({ drivers: [{ id: 'a', name: 'A', place: at(32) }], riders: [{ id: 'r', name: 'R', place: at(32.1) }], arriveBy: new Date(T0 - MIN).toISOString(), now: T0 }, flatProviders),
     /already passed/,

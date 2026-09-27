@@ -6,10 +6,13 @@ const providers = require('./providers');
 const { planTrip, PRIORITY_WEIGHTS, MAX_RIDERS, MAX_DRIVERS, MAX_STOPS, MAX_SEATS } = require('./planner');
 const store = require('./store');
 
+/** `code` + `params` let the app translate the message; `message` is the English fallback. */
 class HttpError extends Error {
-  constructor(status, message) {
+  constructor(status, message, code = null, params = {}) {
     super(message);
     this.status = status;
+    this.code = code;
+    this.params = params;
   }
 }
 
@@ -32,20 +35,20 @@ function cleanPlace(p) {
   const lat = Number(p.lat);
   const lon = Number(p.lon);
   // Israel incl. Eilat and the Golan, with some margin.
-  if (!(lat > 29 && lat < 33.5 && lon > 34 && lon < 36)) throw new HttpError(400, 'Location must be in Israel');
+  if (!(lat > 29 && lat < 33.5 && lon > 34 && lon < 36)) throw new HttpError(400, 'Location must be in Israel', 'notInIsrael');
   return { lat, lon, label: String(p.label || '').slice(0, 120) };
 }
 
 function cleanTime(v) {
   if (!v) return null;
   const ms = Date.parse(v);
-  if (Number.isNaN(ms)) throw new HttpError(400, 'Bad time');
+  if (Number.isNaN(ms)) throw new HttpError(400, 'Bad time', 'badTime');
   return new Date(ms).toISOString();
 }
 
 function cleanStops(list) {
   if (!Array.isArray(list)) throw new HttpError(400, 'Stops must be a list');
-  if (list.length > MAX_STOPS) throw new HttpError(400, `At most ${MAX_STOPS} stops on the way`);
+  if (list.length > MAX_STOPS) throw new HttpError(400, `At most ${MAX_STOPS} stops on the way`, 'tooManyStops', { n: MAX_STOPS });
   return list.map(cleanPlace).filter(Boolean);
 }
 
@@ -53,13 +56,13 @@ const cleanSeats = (n) => Math.min(MAX_SEATS, Math.max(1, Math.round(Number(n)) 
 
 function checkRoomFor(trip, role, exceptId = null) {
   const others = trip.participants.filter((p) => p.id !== exceptId && p.role === role);
-  if (role === 'driver' && others.length >= MAX_DRIVERS) throw new HttpError(400, `This trip already has ${MAX_DRIVERS} drivers`);
-  if (role === 'rider' && others.length >= MAX_RIDERS) throw new HttpError(400, `This trip already has ${MAX_RIDERS} people to pick up`);
+  if (role === 'driver' && others.length >= MAX_DRIVERS) throw new HttpError(400, `This trip already has ${MAX_DRIVERS} drivers`, 'tooManyDrivers', { n: MAX_DRIVERS });
+  if (role === 'rider' && others.length >= MAX_RIDERS) throw new HttpError(400, `This trip already has ${MAX_RIDERS} people to pick up`, 'tooManyRiders', { n: MAX_RIDERS });
 }
 
 async function getTrip(id) {
   const trip = await store.get(id);
-  if (!trip) throw new HttpError(404, 'Trip not found (links expire after 3 days)');
+  if (!trip) throw new HttpError(404, 'Trip not found (links expire after 3 days)', 'notFound');
   return trip;
 }
 
@@ -139,7 +142,7 @@ const routes = [
   ['PATCH', /^\/api\/trips\/([\w-]+)\/participants\/([\w-]+)$/, async (b, [id, pid]) => {
     const trip = await getTrip(id);
     const p = trip.participants.find((x) => x.id === pid);
-    if (!p) throw new HttpError(404, 'Participant not found');
+    if (!p) throw new HttpError(404, 'Participant not found', 'participantNotFound');
     if ('name' in b) p.name = cleanName(b.name) || p.name;
     if ('place' in b) p.place = cleanPlace(b.place);
     if ('role' in b && b.role !== p.role) {
@@ -164,7 +167,7 @@ const routes = [
   ['POST', /^\/api\/trips\/([\w-]+)\/plan$/, async (b, [id]) => {
     const trip = await getTrip(id);
     const drivers = trip.participants.filter((p) => p.role === 'driver');
-    if (!drivers.length) throw new HttpError(400, 'Someone needs to join as a driver.');
+    if (!drivers.length) throw new HttpError(400, 'Someone needs to join as a driver.', 'needDriver');
     const riders = trip.participants.filter((p) => p.role === 'rider');
     try {
       trip.plan = await planTrip(
@@ -180,7 +183,7 @@ const routes = [
         providers,
       );
     } catch (e) {
-      throw new HttpError(422, e.message);
+      throw new HttpError(422, e.message, e.code || null, e.params || {});
     }
     await touch(trip, { invalidatePlan: false });
     return [200, { trip }];
@@ -212,7 +215,7 @@ async function handleApi({ method, url, body }) {
       return await handler(method === 'GET' ? {} : parseBody(body), match.slice(1), url);
     } catch (e) {
       if (!(e instanceof HttpError)) console.error(e);
-      return [e.status || 502, { error: e.message || 'Something went wrong' }];
+      return [e.status || 502, { error: e.message || 'Something went wrong', code: e.code || 'generic', params: e.params || {} }];
     }
   }
   return [404, { error: 'Unknown API route' }];

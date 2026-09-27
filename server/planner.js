@@ -96,6 +96,19 @@ function truncateLine(coords, point) {
   return coords.slice(0, best + 1);
 }
 
+/**
+ * Errors and notes carry a `code` + `params` so the app can show them in the viewer's
+ * language; `message` / `text` is the English fallback.
+ */
+class PlanError extends Error {
+  constructor(code, params, message) {
+    super(message);
+    this.code = code;
+    this.params = params;
+  }
+}
+const note = (code, params, text) => ({ code, params, text });
+
 const isTransitLeg = (leg) => Boolean(leg.tripId || leg.routeShortName);
 const t = (iso) => Date.parse(iso);
 
@@ -410,16 +423,18 @@ function* assignments(nRiders, seats) {
 async function planTrip(input, providers) {
   const drivers = input.drivers || (input.driver ? [input.driver] : []);
   const { riders } = input;
-  if (!drivers.length) throw new Error('Someone needs to join as a driver.');
-  if (!riders.length) throw new Error('Add at least one rider.');
+  if (!drivers.length) throw new PlanError('needDriver', {}, 'Someone needs to join as a driver.');
+  if (!riders.length) throw new PlanError('needRider', {}, 'Add at least one rider.');
   const missing = [...drivers, ...riders].filter((p) => !p.place).map((p) => p.name);
-  if (missing.length) throw new Error(`Waiting for location from: ${missing.join(', ')}`);
-  if (riders.length > MAX_RIDERS) throw new Error(`At most ${MAX_RIDERS} riders per trip.`);
-  if (drivers.length > MAX_DRIVERS) throw new Error(`At most ${MAX_DRIVERS} drivers per trip.`);
+  if (missing.length) throw new PlanError('waitingFor', { names: missing }, `Waiting for location from: ${missing.join(', ')}`);
+  if (riders.length > MAX_RIDERS) throw new PlanError('tooManyRiders', { n: MAX_RIDERS }, `At most ${MAX_RIDERS} riders per trip.`);
+  if (drivers.length > MAX_DRIVERS) throw new PlanError('tooManyDrivers', { n: MAX_DRIVERS }, `At most ${MAX_DRIVERS} drivers per trip.`);
   const seats = drivers.map(seatsOf);
   const totalSeats = seats.reduce((a, b) => a + b, 0);
   if (totalSeats < riders.length) {
-    throw new Error(
+    throw new PlanError(
+      'notEnoughSeats',
+      { riders: riders.length, seats: totalSeats },
       `Not enough seats: ${riders.length} people need a ride but the car${drivers.length > 1 ? 's have' : ' has'} ${totalSeats} free seat${totalSeats === 1 ? '' : 's'}. Drivers can change their seats under Your location.`,
     );
   }
@@ -430,7 +445,7 @@ async function planTrip(input, providers) {
   const now = input.now ?? Date.now();
   const target = input.arriveBy ? Date.parse(input.arriveBy) : null;
   if (target && target < now + 10 * MIN_MS) {
-    throw new Error('The arrival time has already passed. Choose a later time in Trip settings.');
+    throw new PlanError('timePassed', {}, 'The arrival time has already passed. Choose a later time in Trip settings.');
   }
 
   // Where every car goes after its pickups: the stops in order, then the destination.
@@ -499,7 +514,7 @@ async function planTrip(input, providers) {
   const riderCands = riders.map((r, i) => {
     const all = extractCandidates(r, itinsPerRider[i], t0);
     if (all.length === 1 && !slowFor.has(r.name)) {
-      notes.push(`No public transit found for ${r.name} at this time, so a driver will pick them up at their location.`);
+      notes.push(note('noTransit', { name: r.name }, `No public transit found for ${r.name} at this time, so a driver will pick them up at their location.`));
     }
     return pruneCandidates(all, {
       driverOrigins: drivers.map((d) => d.place),
@@ -511,7 +526,7 @@ async function planTrip(input, providers) {
   if (slowFor.size) {
     const names = [...slowFor];
     const list = names.length > 1 ? `${names.slice(0, -1).join(', ')} and ${names.at(-1)}` : names[0];
-    notes.push(`Bus times for ${list} were slow to load, so some bus options may be missing. Tap Recalculate to try again.`);
+    notes.push(note('slowBus', { names }, `Bus times for ${list} were slow to load, so some bus options may be missing. Tap Recalculate to try again.`));
   }
   const indexByKey = new Map();
   for (const cands of riderCands) {
@@ -589,7 +604,7 @@ async function planTrip(input, providers) {
     if (options.some((o) => !o.length)) continue;
     combos.push({ groups, options, ...combine(options.map((o) => o[0])) });
   }
-  if (!combos.length) throw new Error('Could not find a drivable plan. Check that everyone is in a reachable place.');
+  if (!combos.length) throw new PlanError('noPlan', {}, 'Could not find a drivable plan. Check that everyone is in a reachable place.');
   combos.sort((a, b) => a.score - b.score);
   const best = combos[0];
 
@@ -663,7 +678,7 @@ async function planTrip(input, providers) {
       const routeReq =
         routePts.length > 1 && !(routePts.length === 2 && sameSpot(routePts[0], routePts[1]))
           ? providers.driveRoute(routePts).catch((e) => {
-              notes.push(`Could not draw ${driver.name}'s driving route: ${e.message}`);
+              notes.push(note('routeFailed', { name: driver.name }, `Could not draw ${driver.name}'s driving route: ${e.message}`));
               return null;
             })
           : Promise.resolve(null);
@@ -747,6 +762,7 @@ async function planTrip(input, providers) {
       const route = await routeReq;
       const stopsOut = stops.map((s) => ({
         name: s.cand.kind === 'home' ? `${riders[s.riders[0].rider].name}'s location` : s.cand.name,
+        home: s.cand.kind === 'home', // the app shows "<name>'s location" in the viewer's language
         stopCode: s.cand.stopCode || null,
         lat: s.cand.lat,
         lon: s.cand.lon,
@@ -794,6 +810,7 @@ async function planTrip(input, providers) {
           rider: riders[p.rider].name,
           driver: drivers[di].name,
           place: p.cand.kind === 'home' ? `${riders[p.rider].name}'s location` : p.cand.name,
+          home: p.cand.kind === 'home',
         })),
       ),
     });
@@ -811,7 +828,11 @@ async function planTrip(input, providers) {
   }
   if (target && finalArrival > target + MIN_MS) {
     notes.unshift(
-      `You can't all get there by ${hhmm(target)}. The earliest everyone can arrive is about ${hhmm(finalArrival)}. Change the arrival time in Trip settings, or go with this plan.`,
+      note(
+        'cantMakeIt',
+        { target: iso(target), earliest: iso(finalArrival) },
+        `You can't all get there by ${hhmm(target)}. The earliest everyone can arrive is about ${hhmm(finalArrival)}. Change the arrival time in Trip settings, or go with this plan.`,
+      ),
     );
   }
 
@@ -836,6 +857,7 @@ async function planTrip(input, providers) {
 
 module.exports = {
   planTrip,
+  PlanError,
   optimize,
   extractCandidates,
   pruneCandidates,

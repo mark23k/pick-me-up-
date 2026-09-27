@@ -8,6 +8,8 @@ Find the best place to pick up friends anywhere in Israel. Whoever starts the gr
 
 Pickup spots lean toward where the group is heading, so no one is sent the opposite way unless it's really faster. There can be up to 6 riders. Two riders may be sent to the same interchange so they're collected together.
 
+The app is in **Hebrew by default** (right-to-left), with a button in the top bar to switch to English. All text lives in `public/i18n.js`. Server errors and plan notes carry a `code` + `params` that the app translates, with English as the fallback.
+
 ## Run it
 
 ```bash
@@ -36,7 +38,7 @@ server/
   providers.js  Transitous / OSRM / Nominatim clients
   store.js      trip storage: JSON file, or Netlify Blobs (trips expire after 3 days)
 netlify/        Netlify Function wrapping server/api.js
-public/         the phone app (PWA): index.html, app.js, styles.css, sw.js, manifest
+public/         the phone app (PWA): index.html, app.js, i18n.js (Hebrew/English), styles.css, sw.js, manifest
 test/           node:test unit tests
 ```
 

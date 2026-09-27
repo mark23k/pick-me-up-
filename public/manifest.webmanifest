@@ -1,7 +1,9 @@
 {
   "name": "Pickup Planner",
   "short_name": "Pickup",
-  "description": "Find the best bus stop to pick up your friends anywhere in Israel.",
+  "description": "אוספים את החברים בתחנה הנכונה, בכל הארץ.",
+  "lang": "he",
+  "dir": "rtl",
   "start_url": "/",
   "scope": "/",
   "display": "standalone",

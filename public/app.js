@@ -1,9 +1,10 @@
-/* Pickup Planner — client */
+/* Pickup Planner — client. Text comes from i18n.js via t(). */
 'use strict';
 
 const $app = document.getElementById('app');
 const $toast = document.getElementById('toast');
 const $share = document.getElementById('shareBtn');
+const $lang = document.getElementById('langBtn');
 
 // ---------- utils ----------
 
@@ -13,8 +14,8 @@ const esc = (s) =>
 const timeFmt = new Intl.DateTimeFormat('en-GB', { hour: '2-digit', minute: '2-digit', timeZone: 'Asia/Jerusalem' });
 const fmtTime = (iso) => (iso ? timeFmt.format(new Date(iso)) : '—');
 const minutesBetween = (a, b) => Math.round((Date.parse(b) - Date.parse(a)) / 60000);
-const dayFmt = new Intl.DateTimeFormat('en-GB', { weekday: 'short', day: 'numeric', month: 'short', timeZone: 'Asia/Jerusalem' });
-const dayKey = (d) => dayFmt.format(d);
+const dayKey = (d) =>
+  new Intl.DateTimeFormat(lang === 'he' ? 'he-IL' : 'en-GB', { weekday: 'short', day: 'numeric', month: 'short', timeZone: 'Asia/Jerusalem' }).format(d);
 /** "18:00", or "Fri 3 Oct 18:00" when it isn't today. */
 const fmtWhen = (iso) => (!iso ? '—' : dayKey(new Date(iso)) === dayKey(new Date()) ? fmtTime(iso) : `${dayKey(new Date(iso))} ${fmtTime(iso)}`);
 // <input type="datetime-local"> works in the phone's local time
@@ -23,9 +24,9 @@ const fromLocalInput = (v) => (v ? new Date(v).toISOString() : null);
 
 function relative(iso) {
   const m = Math.round((Date.parse(iso) - Date.now()) / 60000);
-  if (m <= 0) return m > -2 ? 'now' : `${-m} min ago`;
-  if (m < 60) return `in ${m} min`;
-  return `in ${Math.floor(m / 60)} h ${m % 60} min`;
+  if (m <= 0) return m > -2 ? t('now') : t('minAgo', -m);
+  if (m < 60) return t('inMin', m);
+  return t('inHours', Math.floor(m / 60), m % 60);
 }
 
 function toast(msg, ms = 2600) {
@@ -59,6 +60,12 @@ function rememberMe(tripId, pid) {
   storage.set('pp:me', all);
 }
 
+/** Server errors and plan notes come with a code; show them in the viewer's language. */
+const errorText = (data, status) =>
+  data.code && hasT(`err.${data.code}`) ? t(`err.${data.code}`, data.params || {}, t) : data.error || t('requestFailed', status);
+const noteText = (n) =>
+  typeof n === 'string' ? n : hasT(`note.${n.code}`) ? t(`note.${n.code}`, n.params || {}, t, fmtWhen) : n.text;
+
 async function api(method, url, body) {
   const res = await fetch(url, {
     method,
@@ -66,17 +73,17 @@ async function api(method, url, body) {
     body: body ? JSON.stringify(body) : undefined,
   });
   const data = await res.json().catch(() => ({}));
-  if (!res.ok) throw new Error(data.error || `Request failed (${res.status})`);
+  if (!res.ok) throw new Error(errorText(data, res.status));
   return data;
 }
 
 function getGps() {
   return new Promise((resolve, reject) => {
-    if (!navigator.geolocation) return reject(new Error('This device has no GPS access'));
+    if (!navigator.geolocation) return reject(new Error(t('noGps')));
     navigator.geolocation.getCurrentPosition(
       (p) => resolve({ lat: p.coords.latitude, lon: p.coords.longitude }),
       (e) => {
-        const err = new Error(e.code === 1 ? 'Location is blocked on this phone' : 'Could not get your location');
+        const err = new Error(e.code === 1 ? t('locBlocked') : t('locFailed'));
         err.denied = e.code === 1;
         reject(err);
       },
@@ -89,26 +96,14 @@ function getGps() {
 function locationHelp() {
   const ua = navigator.userAgent;
   const native = window.Capacitor?.isNativePlatform?.();
-  if (/FBAN|FBAV|Instagram|Line\//.test(ua)) {
-    return 'This in-app browser blocks location. Open the link in Safari or Chrome (⋯ menu → Open in browser).';
+  if (/FBAN|FBAV|Instagram|Line\//.test(ua)) return t('help.inApp');
+  if (/iPhone|iPad|iPod/.test(ua)) return native ? t('help.iosApp') : t('help.iosWeb');
+  if (/Android/.test(ua)) return native ? t('help.androidApp') : t('help.androidWeb');
+  if (/Macintosh/.test(ua) && navigator.maxTouchPoints < 2) {
+    // iPads also report "Macintosh"
+    return /Chrome\//.test(ua) ? t('help.macChrome') : t('help.macSafari');
   }
-  if (/iPhone|iPad|iPod/.test(ua)) {
-    return native
-      ? 'iPhone Settings → Pickup Planner → Location → While Using the App.'
-      : 'iPhone Settings → Privacy & Security → Location Services → Safari Websites → While Using the App. ' +
-          'Then in Safari tap aA → Website Settings → Location → Allow, and try again.';
-  }
-  if (/Android/.test(ua)) {
-    return native
-      ? 'Android Settings → Apps → Pickup Planner → Permissions → Location → Allow.'
-      : 'Tap the icon left of the web address → Permissions → Location → Allow. Also check that Location is on in Android Settings.';
-  }
-  if (/Macintosh/.test(ua) && navigator.maxTouchPoints < 2) {  // iPads also report "Macintosh"
-    return /Chrome\//.test(ua)
-      ? 'Click the icon left of the web address → Location → Allow. Also check System Settings → Privacy & Security → Location Services → Google Chrome.'
-      : 'Safari → Settings → Websites → Location → set this site to Allow. Also check System Settings → Privacy & Security → Location Services → Safari.';
-  }
-  return "Allow location for this site in your browser's settings, then try again.";
+  return t('help.other');
 }
 
 // ---------- state ----------
@@ -135,6 +130,24 @@ function route() {
 }
 window.addEventListener('popstate', route);
 
+// ---------- language ----------
+
+function renderChrome() {
+  document.title = t('appName');
+  $share.textContent = t('shareBtn');
+  $lang.textContent = t('langSwitch');
+  $lang.setAttribute('aria-label', t('langSwitchAria'));
+}
+
+$lang.addEventListener('click', () => {
+  setLang(lang === 'he' ? 'en' : 'he');
+  renderChrome();
+  // redraw whatever is on screen in the new language
+  if (state.trip) renderTrip();
+  else if (document.getElementById('permAllow')) askPermissionsFirst(route);
+  else renderHome();
+});
+
 // ---------- home ----------
 
 const MAX_STOPS = 3;
@@ -143,7 +156,7 @@ const MAX_STOPS = 3;
 const pickerHtml = (prefix, placeholder) => `
   <form id="${prefix}Form" class="row">
     <input id="${prefix}Input" class="grow" type="search" placeholder="${esc(placeholder)}" dir="auto" autocomplete="off" aria-label="${esc(placeholder)}">
-    <button class="btn ghost">Search</button>
+    <button class="btn ghost">${t('search')}</button>
   </form>
   <ul id="${prefix}Results" class="results-list" hidden></ul>`;
 
@@ -151,46 +164,49 @@ const stopItems = (stops) =>
   stops
     .map(
       (p, i) => `<li><span class="dot">${i + 1}</span><span class="grow" dir="auto">${esc(p.label)}</span>
-        <button type="button" class="btn danger-text" data-stop-remove="${i}" aria-label="Remove stop ${i + 1}">✕</button></li>`,
+        <button type="button" class="btn danger-text" data-stop-remove="${i}" aria-label="${esc(t('removeStop', i + 1))}">✕</button></li>`,
     )
     .join('');
 
+// kept across language switches so nothing typed is lost
+const homeDraft = { dest: null, stops: [], arrive: '', role: 'driver' };
+
 function renderHome() {
-  const draft = { dest: null, stops: [] };
+  const draft = homeDraft;
   $app.innerHTML = `
     <section class="card hero">
-      <h1>Pick up your friends at the right bus stop</h1>
-      <p>Everyone adds their location. The app finds the stop where they should get off the bus or train so you all meet as early as possible, on the way to where you're going. Riders get bus directions, and each driver gets Waze links. Works anywhere in Israel.</p>
-      <label for="name">Your name</label>
-      <input id="name" type="text" autocomplete="given-name" maxlength="40" value="${esc(storage.get('pp:name', ''))}">
-      <label id="roleLabel">I am…</label>
+      <h1>${t('heroTitle')}</h1>
+      <p>${t('heroText')}</p>
+      <label for="name">${t('yourName')}</label>
+      <input id="name" type="text" autocomplete="given-name" maxlength="40" dir="auto" value="${esc(storage.get('pp:name', ''))}">
+      <label id="roleLabel">${t('iAm')}</label>
       <div class="seg" role="group" aria-labelledby="roleLabel" id="roleSeg">
-        <button type="button" data-role="driver" aria-pressed="true">🚗 A driver</button>
-        <button type="button" data-role="rider" aria-pressed="false">🚌 Getting picked up</button>
+        <button type="button" data-role="driver" aria-pressed="${draft.role === 'driver'}">${t('roleDriver')}</button>
+        <button type="button" data-role="rider" aria-pressed="${draft.role === 'rider'}">${t('roleRider')}</button>
       </div>
-      <label for="homeDestInput">Where are you all going?</label>
+      <label for="homeDestInput">${t('whereGoing')}</label>
       <p id="homeDestChosen" class="small chosen" dir="auto" hidden></p>
-      ${pickerHtml('homeDest', 'Final destination: address or place')}
-      <label for="homeArrive">What time do you need to be there?</label>
-      <input id="homeArrive" type="datetime-local" min="${toLocalInput(new Date().toISOString())}">
-      <label for="homeStopInput">Stops on the way <span class="muted">(optional)</span></label>
+      ${pickerHtml('homeDest', t('destPlaceholder'))}
+      <label for="homeArrive">${t('whenThere')}</label>
+      <input id="homeArrive" type="datetime-local" value="${esc(draft.arrive)}" min="${toLocalInput(new Date().toISOString())}">
+      <label for="homeStopInput">${t('stopsOnWay')} <span class="muted">${t('optional')}</span></label>
       <ol id="homeStops" class="stop-list"></ol>
-      <div id="homeStopPicker">${pickerHtml('homeStop', 'Add a stop, e.g. a gas station')}</div>
-      <button id="startBtn" class="btn big block" style="margin-top:18px">Start a pickup plan</button>
+      <div id="homeStopPicker">${pickerHtml('homeStop', t('addStop'))}</div>
+      <button id="startBtn" class="btn big block" style="margin-top:18px">${t('start')}</button>
     </section>
     <section class="card small muted">
-      <b>How it works</b>
+      <b>${t('howTitle')}</b>
       <ol style="padding-inline-start:18px;margin:8px 0 0">
-        <li>Start a plan with where you're going and when you need to be there, then send the link to your friends (WhatsApp works well).</li>
-        <li>Each person opens the link and taps <i>Use my location</i>. There can be more than one driver.</li>
-        <li>Tap <i>Find the best pickup</i>. Everyone sees which car takes them, what time to leave and where to go.</li>
+        <li>${t('how1')}</li>
+        <li>${t('how2')}</li>
+        <li>${t('how3')}</li>
       </ol>
     </section>`;
   const $ = (id) => document.getElementById(id);
   const showDraft = () => {
     $('homeDestChosen').hidden = !draft.dest;
     $('homeDestChosen').textContent = draft.dest ? `🏁 ${draft.dest.label}` : '';
-    $('homeDestInput').placeholder = draft.dest ? 'Change destination' : 'Final destination: address or place';
+    $('homeDestInput').placeholder = draft.dest ? t('changeDest') : t('destPlaceholder');
     $('homeStops').innerHTML = stopItems(draft.stops);
     $('homeStopPicker').hidden = draft.stops.length >= MAX_STOPS;
     $('homeStops').querySelectorAll('[data-stop-remove]').forEach((b) =>
@@ -200,14 +216,16 @@ function renderHome() {
       }),
     );
   };
-  let role = 'driver';
+  showDraft();
   const seg = $('roleSeg');
   seg.addEventListener('click', (e) => {
     const b = e.target.closest('button');
     if (!b) return;
-    role = b.dataset.role;
+    draft.role = b.dataset.role;
     seg.querySelectorAll('button').forEach((x) => x.setAttribute('aria-pressed', String(x === b)));
   });
+  $('name').addEventListener('input', (e) => storage.set('pp:name', e.target.value.trim()));
+  $('homeArrive').addEventListener('input', (e) => (draft.arrive = e.target.value));
   bindSearch($('homeDestForm'), $('homeDestInput'), $('homeDestResults'), (place) => {
     draft.dest = place;
     $('homeDestInput').value = '';
@@ -221,27 +239,28 @@ function renderHome() {
   $('startBtn').addEventListener('click', async () => {
     const name = $('name').value.trim();
     if (!name) {
-      toast('Enter your name');
+      toast(t('enterName'));
       return $('name').focus();
     }
     if (!draft.dest) {
-      toast('Choose where you are all going');
+      toast(t('chooseDest'));
       return $('homeDestInput').focus();
     }
     const arriveBy = fromLocalInput($('homeArrive').value);
     if (!arriveBy || Date.parse(arriveBy) < Date.now() + 10 * 60000) {
-      toast(arriveBy ? 'That time has already passed' : 'Choose what time you need to be there');
+      toast(arriveBy ? t('timePassed') : t('chooseTime'));
       return $('homeArrive').focus();
     }
     storage.set('pp:name', name);
     try {
       const { trip, participantId } = await api('POST', '/api/trips', {
         name,
-        role,
+        role: draft.role,
         destination: draft.dest,
         stops: draft.stops,
         arriveBy,
       });
+      Object.assign(homeDraft, { dest: null, stops: [], arrive: '' });
       rememberMe(trip.id, participantId);
       history.pushState(null, '', `/t/${trip.id}`);
       route();
@@ -259,12 +278,12 @@ async function openTrip(id) {
   state.me = myIdFor(id);
   $share.hidden = false;
   if (!state.trip || state.trip.id !== id) {
-    $app.innerHTML = `<div class="card row"><div class="spinner"></div> Loading…</div>`;
+    $app.innerHTML = `<div class="card row"><div class="spinner"></div> ${t('loading')}</div>`;
   }
   try {
     state.trip = (await api('GET', `/api/trips/${id}`)).trip;
   } catch (e) {
-    $app.innerHTML = `<div class="banner error">${esc(e.message)}</div><a class="btn" href="/">Start a new plan</a>`;
+    $app.innerHTML = `<div class="banner error">${esc(e.message)}</div><a class="btn" href="/">${t('startNew')}</a>`;
     return;
   }
   if (state.me && !meP()) state.me = null; // removed from the trip
@@ -289,10 +308,9 @@ async function poll() {
 
 $share.addEventListener('click', async () => {
   const url = location.origin + `/t/${state.trip.id}`;
-  const text = `Join my pickup plan. Open the link and add your location: ${url}`;
   if (navigator.share) {
     try {
-      await navigator.share({ title: 'Pickup Planner', text: 'Join my pickup plan and add your location', url });
+      await navigator.share({ title: t('appName'), text: t('shareShort'), url });
       return;
     } catch {
       /* cancelled */
@@ -300,9 +318,9 @@ $share.addEventListener('click', async () => {
   }
   try {
     await navigator.clipboard.writeText(url);
-    toast('Link copied');
+    toast(t('linkCopied'));
   } catch {
-    window.open(`https://wa.me/?text=${encodeURIComponent(text)}`, '_blank');
+    window.open(`https://wa.me/?text=${encodeURIComponent(t('shareText', url))}`, '_blank');
   }
 });
 
@@ -322,7 +340,7 @@ function renderTrip() {
     <section class="stack" style="margin-bottom:14px">
       ${state.error ? `<div class="banner error">${esc(state.error)}</div>` : ''}
       <button id="planBtn" class="btn big block" ${canPlan && !state.busy ? '' : 'disabled'}>
-        ${state.busy ? '<span class="spinner"></span> Checking buses and roads…' : trip.plan ? '🔄 Recalculate' : '✨ Find the best pickup'}
+        ${state.busy ? `<span class="spinner"></span> ${t('planning')}` : trip.plan ? t('recalc') : t('findBest')}
       </button>
       ${!canPlan ? `<p class="small muted" style="text-align:center">${esc(planBlocker())}</p>` : ''}
     </section>
@@ -333,26 +351,26 @@ function renderTrip() {
 }
 
 function planBlocker() {
-  const t = state.trip;
-  if (!driverP()) return 'Waiting for a driver to join.';
-  if (!t.participants.some((p) => p.role === 'rider')) return 'Share the link so the people you’re picking up can join.';
-  const missing = t.participants.filter((p) => !p.place).map((p) => p.name);
-  return `Waiting for location from: ${missing.join(', ')}`;
+  const tr = state.trip;
+  if (!driverP()) return t('blockNoDriver');
+  if (!tr.participants.some((p) => p.role === 'rider')) return t('blockNoRiders');
+  const missing = tr.participants.filter((p) => !p.place).map((p) => p.name);
+  return t('blockMissing', t('list', missing));
 }
 
 function joinCard() {
   return `
     <section class="card">
-      <h2>Join this pickup</h2>
+      <h2>${t('joinTitle')}</h2>
       <form id="joinForm">
-        <label for="joinName">Your name</label>
-        <input id="joinName" type="text" required maxlength="40" value="${esc(storage.get('pp:name', ''))}">
-        <label id="joinRoleLabel">I am…</label>
+        <label for="joinName">${t('yourName')}</label>
+        <input id="joinName" type="text" required maxlength="40" dir="auto" value="${esc(storage.get('pp:name', ''))}">
+        <label id="joinRoleLabel">${t('iAm')}</label>
         <div class="seg" role="group" aria-labelledby="joinRoleLabel" id="joinRole">
-          <button type="button" data-role="rider" aria-pressed="true">🚌 Getting picked up</button>
-          <button type="button" data-role="driver" aria-pressed="false">🚗 A driver</button>
+          <button type="button" data-role="rider" aria-pressed="true">${t('roleRider')}</button>
+          <button type="button" data-role="driver" aria-pressed="false">${t('roleDriver')}</button>
         </div>
-        <button class="btn block" style="margin-top:14px">Join</button>
+        <button class="btn block" style="margin-top:14px">${t('joinBtn')}</button>
       </form>
     </section>`;
 }
@@ -361,20 +379,20 @@ function myLocationCard(me) {
   return `
     <section class="card">
       <div class="row">
-        <h2 class="grow" style="margin:0">Your location</h2>
-        <span class="badge ${me.role === 'driver' ? 'warn' : ''}">${me.role === 'driver' ? 'Driver' : 'Rider'}</span>
+        <h2 class="grow" style="margin:0">${t('yourLocation')}</h2>
+        <span class="badge ${me.role === 'driver' ? 'warn' : ''}">${me.role === 'driver' ? t('badgeDriver') : t('badgeRider')}</span>
       </div>
-      <p class="small muted" style="margin:6px 0 10px" dir="auto">${me.place ? '📍 ' + esc(me.place.label) : 'Where are you starting from?'}</p>
-      <button id="gpsBtn" class="btn block">📍 Use my current location</button>
+      <p class="small muted" style="margin:6px 0 10px" dir="auto">${me.place ? '📍 ' + esc(me.place.label) : t('whereFrom')}</p>
+      <button id="gpsBtn" class="btn block">${t('useGps')}</button>
       <div id="gpsHelp" class="banner error small" style="margin-top:10px" hidden></div>
       <form id="searchForm" class="row" style="margin-top:10px">
-        <input id="searchInput" class="grow" type="search" placeholder="…or search an address, city or stop" dir="auto" autocomplete="off" aria-label="Search for a place">
-        <button class="btn ghost">Search</button>
+        <input id="searchInput" class="grow" type="search" placeholder="${esc(t('searchPlaceholder'))}" dir="auto" autocomplete="off" aria-label="${esc(t('searchAria'))}">
+        <button class="btn ghost">${t('search')}</button>
       </form>
       <ul id="searchResults" class="results-list" hidden></ul>
       ${
         me.role === 'driver'
-          ? `<label id="seatsLabel">Free seats in your car</label>
+          ? `<label id="seatsLabel">${t('freeSeats')}</label>
              <div class="seg" role="group" aria-labelledby="seatsLabel" id="seatSeg">
                ${[1, 2, 3, 4, 5, 6].map((n) => `<button type="button" data-seats="${n}" aria-pressed="${(me.seats || 4) === n}">${n}</button>`).join('')}
              </div>`
@@ -384,69 +402,72 @@ function myLocationCard(me) {
 }
 
 function peopleCard() {
-  const t = state.trip;
-  const items = t.participants
+  const tr = state.trip;
+  const items = tr.participants
     .map(
       (p) => `
       <li>
         <div class="avatar ${p.role}">${esc(p.name.slice(0, 1).toUpperCase())}</div>
         <div class="person-main">
-          <div>${esc(p.name)}${p.id === state.me ? ' <span class="muted small">(you)</span>' : ''}${p.role === 'driver' ? ` <span class="muted small">· ${p.seats || 4} seats</span>` : ''}</div>
-          <div class="where" dir="auto">${p.place ? esc(p.place.label) : 'No location yet'}</div>
+          <div><span dir="auto">${esc(p.name)}</span>${p.id === state.me ? ` <span class="muted small">${t('you')}</span>` : ''}${
+            p.role === 'driver' ? ` <span class="muted small">· ${t('seats', p.seats || 4)}</span>` : ''
+          }</div>
+          <div class="where" dir="auto">${p.place ? esc(p.place.label) : t('noLocYet')}</div>
         </div>
-        <span class="badge ${p.place ? 'ok' : 'warn'}">${p.role === 'driver' ? '🚗 ' : '🚌 '}${p.place ? 'Ready' : 'Waiting'}</span>
-        ${p.id !== state.me ? `<button class="btn danger-text" data-remove="${esc(p.id)}" aria-label="Remove ${esc(p.name)}">✕</button>` : ''}
+        <span class="badge ${p.place ? 'ok' : 'warn'}">${p.role === 'driver' ? '🚗 ' : '🚌 '}${p.place ? t('ready') : t('waiting')}</span>
+        ${p.id !== state.me ? `<button class="btn danger-text" data-remove="${esc(p.id)}" aria-label="${esc(t('removeAria', p.name))}">✕</button>` : ''}
       </li>`,
     )
     .join('');
   return `
     <section class="card">
-      <div class="row"><h2 class="grow" style="margin:0">Who’s coming</h2>
-        <button class="btn ghost small" id="inviteBtn">+ Invite</button></div>
+      <div class="row"><h2 class="grow" style="margin:0">${t('whosComing')}</h2>
+        <button class="btn ghost small" id="inviteBtn">${t('invite')}</button></div>
       <ul class="people">${items}</ul>
     </section>`;
 }
 
 function settingsCard() {
-  const t = state.trip;
-  const d = t.destination || { type: 'driverStart' };
-  const pr = t.priority || 'balanced';
+  const tr = state.trip;
+  const d = tr.destination || { type: 'driverStart' };
+  const pr = tr.priority || 'balanced';
   return `
     <details class="card" id="settings" ${storage.get('pp:settingsOpen', false) ? 'open' : ''}>
-      <summary>Trip settings <span class="small muted" style="margin-inline-start:auto;margin-inline-end:8px">${esc(settingsSummary())}</span></summary>
-      <label for="arriveBy">Be at the destination by</label>
+      <summary>${t('settings')} <span class="small muted" style="margin-inline-start:auto;margin-inline-end:8px" dir="auto">${esc(settingsSummary())}</span></summary>
+      <label for="arriveBy">${t('beThereBy')}</label>
       <div class="row">
-        <input id="arriveBy" class="grow" type="datetime-local" value="${toLocalInput(t.arriveBy)}" min="${toLocalInput(new Date().toISOString())}">
-        <button class="btn ghost small" id="asapBtn">ASAP</button>
+        <input id="arriveBy" class="grow" type="datetime-local" value="${toLocalInput(tr.arriveBy)}" min="${toLocalInput(new Date().toISOString())}">
+        <button class="btn ghost small" id="asapBtn">${t('asap')}</button>
       </div>
-      ${t.arriveBy ? '' : '<p class="small muted" style="margin:6px 0 0">No time set: everyone leaves now and arrives as early as possible.</p>'}
-      <label for="destInput">Going to</label>
-      <p class="small chosen" dir="auto">${d.type === 'custom' && d.place ? '🏁 ' + esc(d.place.label) : d.type === 'none' ? 'Nowhere set: just the pickups' : 'Back to the driver’s start'}</p>
-      ${pickerHtml('dest', 'Change destination')}
-      <label for="stopInput">Stops on the way</label>
-      <ol class="stop-list" id="tripStops">${stopItems(t.stops || [])}</ol>
-      ${(t.stops || []).length < MAX_STOPS ? pickerHtml('stop', 'Add a stop, e.g. a gas station') : ''}
-      <label id="prLabel">What matters most?</label>
+      ${tr.arriveBy ? '' : `<p class="small muted" style="margin:6px 0 0">${t('noTimeSet')}</p>`}
+      <label for="destInput">${t('goingTo')}</label>
+      <p class="small chosen" dir="auto">${d.type === 'custom' && d.place ? '🏁 ' + esc(d.place.label) : d.type === 'none' ? t('nowhere') : t('backToStart')}</p>
+      ${pickerHtml('dest', t('changeDest'))}
+      <label for="stopInput">${t('stopsOnWay')}</label>
+      <ol class="stop-list" id="tripStops">${stopItems(tr.stops || [])}</ol>
+      ${(tr.stops || []).length < MAX_STOPS ? pickerHtml('stop', t('addStop')) : ''}
+      <label id="prLabel">${t('priority')}</label>
       <div class="seg" role="group" aria-labelledby="prLabel" id="prSeg">
-        <button type="button" data-pr="fastest" aria-pressed="${pr === 'fastest'}">Fastest</button>
-        <button type="button" data-pr="balanced" aria-pressed="${pr === 'balanced'}">Balanced</button>
-        <button type="button" data-pr="lessDriving" aria-pressed="${pr === 'lessDriving'}">Less driving</button>
+        <button type="button" data-pr="fastest" aria-pressed="${pr === 'fastest'}">${t('prFastest')}</button>
+        <button type="button" data-pr="balanced" aria-pressed="${pr === 'balanced'}">${t('prBalanced')}</button>
+        <button type="button" data-pr="lessDriving" aria-pressed="${pr === 'lessDriving'}">${t('prLessDriving')}</button>
       </div>
     </details>`;
 }
 
 function settingsSummary() {
-  const t = state.trip;
-  const when = t.arriveBy ? `by ${fmtWhen(t.arriveBy)}` : 'ASAP';
-  const d = t.destination || {};
-  const dest = d.type === 'custom' && d.place ? `🏁 ${d.place.label.split(',')[0]}` : d.type === 'none' ? 'pickup only' : '↩ back';
-  const n = (t.stops || []).length;
-  return `${when} · ${dest}${n ? ` · ${n} stop${n > 1 ? 's' : ''}` : ''}`;
+  const tr = state.trip;
+  const when = tr.arriveBy ? t('sumBy', fmtWhen(tr.arriveBy)) : t('asap');
+  const d = tr.destination || {};
+  const dest = d.type === 'custom' && d.place ? `🏁 ${d.place.label.split(',')[0]}` : d.type === 'none' ? t('sumPickupOnly') : t('sumBack');
+  const n = (tr.stops || []).length;
+  return `${when} · ${dest}${n ? ` · ${t('sumStops', n)}` : ''}`;
 }
 
 // ---------- results ----------
 
 const planDrivers = (plan) => plan.drivers || [plan.driver]; // older plans had a single driver
+const stopName = (s) => (s.home ? t('homeOf', s.riders[0]) : s.name);
 
 function resultsHtml(plan) {
   const me = state.me;
@@ -460,19 +481,21 @@ function resultsHtml(plan) {
   const sel = people.find((p) => p.id === state.tab);
   const s = plan.summary;
   return `
-    ${plan.stale ? `<div class="banner warn">Something changed since this plan was made. Tap <b>Recalculate</b>.</div>` : ''}
-    ${plan.notes.map((n) => `<div class="banner warn">${esc(n)}</div>`).join('')}
+    ${plan.stale ? `<div class="banner warn">${t('stale')}</div>` : ''}
+    ${plan.notes.map((n) => `<div class="banner warn">${esc(noteText(n))}</div>`).join('')}
     <div class="summary">
-      <div><b>${fmtTime(s.driverLeaveAt)}</b><span>${cars.length > 1 ? 'First car leaves' : 'Driver leaves'}</span></div>
-      <div><b>${fmtTime(s.lastPickupAt)}</b><span>${cars.length > 1 ? 'Everyone picked up' : 'Everyone in the car'}</span></div>
-      <div><b>${fmtTime(s.finalArrival)}</b><span>${drivers.some((d) => d.destination) ? (plan.arriveBy ? `At destination (goal ${fmtTime(plan.arriveBy)})` : 'At destination') : 'Done'}</span></div>
+      <div><b>${fmtTime(s.driverLeaveAt)}</b><span>${cars.length > 1 ? t('firstCarLeaves') : t('driverLeaves')}</span></div>
+      <div><b>${fmtTime(s.lastPickupAt)}</b><span>${cars.length > 1 ? t('everyonePicked') : t('everyoneInCar')}</span></div>
+      <div><b>${fmtTime(s.finalArrival)}</b><span>${
+        drivers.some((d) => d.destination) ? (plan.arriveBy ? t('atDestGoal', fmtTime(plan.arriveBy)) : t('atDest')) : t('done')
+      }</span></div>
     </div>
     ${
       drivers.length > 1
-        ? `<section class="card cars"><h2>Who goes in which car</h2>${drivers
+        ? `<section class="card cars"><h2>${t('whichCar')}</h2>${drivers
             .map(
-              (d) => `<div class="car-row"><b>🚗 ${esc(d.name)}</b><span dir="auto">${
-                d.stops.length ? esc(d.stops.flatMap((x) => x.riders).join(', ')) : '<span class="muted">No pickups, drive straight there</span>'
+              (d) => `<div class="car-row"><b dir="auto">🚗 ${esc(d.name)}</b><span dir="auto">${
+                d.stops.length ? esc(t('list', d.stops.flatMap((x) => x.riders))) : `<span class="muted">${t('noPickupsStraight')}</span>`
               }</span></div>`,
             )
             .join('')}</section>`
@@ -482,17 +505,19 @@ function resultsHtml(plan) {
       ${people
         .map(
           (p) =>
-            `<button role="tab" data-tab="${esc(p.id)}" aria-selected="${p.id === sel.id}">${p.role === 'driver' ? '🚗' : '🚌'} ${esc(p.name)}${p.id === me ? ' (you)' : ''}</button>`,
+            `<button role="tab" data-tab="${esc(p.id)}" aria-selected="${p.id === sel.id}">${p.role === 'driver' ? '🚗' : '🚌'} <span dir="auto">${esc(p.name)}</span>${p.id === me ? ` ${t('you')}` : ''}</button>`,
         )
         .join('')}
     </div>
     <section class="card">
       ${sel.role === 'driver' ? driverView(drivers.find((d) => d.participantId === sel.id), plan) : riderView(plan.riders.find((r) => r.participantId === sel.id), plan)}
-      <div id="map" role="img" aria-label="Map of the routes"></div>
+      <div id="map" dir="ltr" role="img" aria-label="${esc(t('mapAria'))}"></div>
     </section>
     ${alternativesHtml(plan)}
-    <p class="small muted" style="text-align:center">Planned ${fmtTime(plan.computedAt)} using Israel Ministry of Transport timetables. Buses can run late, so check live times in Moovit or Google Maps before you go.</p>`;
+    <p class="small muted" style="text-align:center">${t('plannedAt', fmtTime(plan.computedAt))}</p>`;
 }
+
+const wazeBtn = (url) => `<div class="actions"><a class="btn waze small" href="${esc(url)}" target="_blank" rel="noopener">${t('navWaze')}</a></div>`;
 
 function driverView(d, plan) {
   const stops = d.stops
@@ -500,102 +525,106 @@ function driverView(d, plan) {
       (s, i) => `
       <li>
         <span class="dot">${i + 1}</span>
-        <div><span class="t">${fmtTime(s.eta)}</span> <b dir="auto">${esc(s.name)}</b>${s.stopCode ? ` <span class="small muted">stop #${esc(s.stopCode)}</span>` : ''}</div>
-        <div class="detail">Pick up ${esc(s.riders.join(' & '))}${minutesBetween(s.eta, s.pickupAt) > 3 ? `, ready by ${fmtTime(s.pickupAt)}` : ''}</div>
-        <div class="actions"><a class="btn waze small" href="${esc(s.wazeUrl)}" target="_blank" rel="noopener">Navigate with Waze</a></div>
+        <div><span class="t">${fmtTime(s.eta)}</span> <b dir="auto">${esc(stopName(s))}</b>${s.stopCode ? ` <span class="small muted">${t('stopNo', esc(s.stopCode))}</span>` : ''}</div>
+        <div class="detail">${esc(t('pickUp', t('list', s.riders)))}${minutesBetween(s.eta, s.pickupAt) > 3 ? t('readyBy', fmtTime(s.pickupAt)) : ''}</div>
+        ${wazeBtn(s.wazeUrl)}
       </li>`,
     )
     .join('');
   const waypoints = (d.waypoints || [])
     .map(
       (w) => `<li><span class="dot">📍</span>
-        <div><span class="t">${fmtTime(w.eta)}</span> Stop at <b dir="auto">${esc(w.label)}</b></div>
-        ${w.leaveAt ? `<div class="detail">About 10 min, leave by ${fmtTime(w.leaveAt)}</div>` : ''}
-        <div class="actions"><a class="btn waze small" href="${esc(w.wazeUrl)}" target="_blank" rel="noopener">Navigate with Waze</a></div></li>`,
+        <div><span class="t">${fmtTime(w.eta)}</span> ${t('stopAt', `<b dir="auto">${esc(w.label)}</b>`)}</div>
+        ${w.leaveAt ? `<div class="detail">${t('aboutTen', fmtTime(w.leaveAt))}</div>` : ''}
+        ${wazeBtn(w.wazeUrl)}</li>`,
     )
     .join('');
   const dest = d.destination
     ? `<li><span class="dot">🏁</span>
-         <div><span class="t">${fmtTime(d.destination.eta)}</span> <b dir="auto">${esc(d.destination.label || 'Destination')}</b></div>
-         <div class="actions"><a class="btn waze small" href="${esc(d.destination.wazeUrl)}" target="_blank" rel="noopener">Navigate with Waze</a></div></li>`
+         <div><span class="t">${fmtTime(d.destination.eta)}</span> <b dir="auto">${esc(d.destination.label || t('destination'))}</b></div>
+         ${wazeBtn(d.destination.wazeUrl)}</li>`
     : '';
   const driveMin = d.driveMinutes ?? plan.summary.driveMinutes;
   return `
     ${
       d.stops.length
-        ? `<div class="leave"><span>Leave at</span><span class="count">${relative(d.leaveAt)}</span></div>
+        ? `<div class="leave"><span>${t('leaveAt')}</span><span class="count">${relative(d.leaveAt)}</span></div>
            <div class="leave"><span class="when">${fmtTime(d.leaveAt)}</span>
-             <span class="count">${driveMin} min driving${d.route ? ` · ${d.route.km} km` : ''}</span></div>`
-        : `<p>🙌 <b>No one to pick up.</b> The other car${planDrivers(plan).filter((x) => x.stops.length).length > 1 ? 's are' : ' is'} closer to everyone. ${
-            d.destination || waypoints ? 'Times below are if you leave now.' : ''
+             <span class="count">${t('driving', driveMin)}${d.route ? ` · ${t('km', d.route.km)}` : ''}</span></div>`
+        : `<p>🙌 <b>${t('noOne')}</b> ${t('othersCloser', planDrivers(plan).filter((x) => x.stops.length).length > 1)} ${
+            d.destination || waypoints ? t('ifLeaveNow') : ''
           }</p>`
     }
     <ol class="timeline">
-      <li><span class="dot">🚗</span><div><span class="t">${fmtTime(d.leaveAt)}</span> Leave from <span dir="auto">${esc(d.origin.label || 'your location')}</span></div></li>
+      <li><span class="dot">🚗</span><div><span class="t">${fmtTime(d.leaveAt)}</span> ${t('leaveFrom', `<span dir="auto">${esc(d.origin.label || t('yourLocationLower'))}</span>`)}</div></li>
       ${stops}${waypoints}${dest}
     </ol>
-    ${d.googleMapsUrl ? `<a class="btn ghost block" href="${esc(d.googleMapsUrl)}" target="_blank" rel="noopener">Whole route in Google Maps</a>` : ''}
-    <p class="small muted">Waze opens one stop at a time. After each stop, come back here and tap the next one. Drive times include a 20% traffic allowance, but check Waze for live traffic before you leave.${
-      waypoints ? ' Each stop on the way allows about 10 minutes.' : ''
-    }</p>`;
+    ${d.googleMapsUrl ? `<a class="btn ghost block" href="${esc(d.googleMapsUrl)}" target="_blank" rel="noopener">${t('wholeRoute')}</a>` : ''}
+    <p class="small muted">${t('wazeNote')}${waypoints ? t('eachStop10') : ''}</p>`;
 }
 
+const modeKey = (mode) => (/RAIL|SUBURBAN|LONG_DISTANCE/.test(mode || '') ? 'RAIL' : mode);
+const modeName = (mode) => (hasT(`mode.${modeKey(mode)}`) ? t(`mode.${modeKey(mode)}`) : t('mode.other'));
+const modeIcon = (mode) => ({ RAIL: '🚆', TRAM: '🚊', SUBWAY: '🚇', FERRY: '⛴️' })[modeKey(mode)] || '🚌';
+
 function riderView(r, plan) {
-  if (!r) return '<p>No instructions.</p>';
+  if (!r) return `<p>${t('noInstr')}</p>`;
   const p = r.pickup;
   const driverName = esc(r.driverName || plan.driver.name);
   if (r.mode === 'home') {
     return `
-      <div class="leave"><span>Driver arrives</span><span class="count">${relative(p.driverEta)}</span></div>
+      <div class="leave"><span>${t('driverArrives')}</span><span class="count">${relative(p.driverEta)}</span></div>
       <div class="leave"><span class="when">${fmtTime(p.driverEta)}</span></div>
-      <p>🏠 Stay where you are. <b>${driverName}</b> will pick you up at <span dir="auto">${esc(p.name)}</span>.</p>`;
+      <p>${t('stayHome', `<span dir="auto">${driverName}</span>`, `<span dir="auto">${esc(p.name)}</span>`)}</p>`;
   }
   const rides = r.steps.filter((s) => s.type === 'ride');
-  const code = (c) => (c ? ` <span class="muted">#${esc(c)}</span>` : '');
-  const icon = (s) => ({ Bus: '🚌', Train: '🚆', 'Light rail': '🚊', Metro: '🚇' })[s.modeLabel] || '🚌';
+  const stop = (name, c) => `<b dir="auto">${esc(name)}</b>${c ? ` <span class="muted">#${esc(c)}</span>` : ''}`;
   const rideName = (s) =>
-    `${esc(s.modeLabel)} ${s.line ? `<span class="line-no">${esc(s.line)}</span>` : s.routeName ? `<span dir="auto">${esc(s.routeName)}</span>` : ''}${
-      s.headsign ? ` <span class="muted">to <span dir="auto">${esc(s.headsign)}</span></span>` : ''
+    `${modeName(s.mode)} ${s.line ? `<span class="line-no">${esc(s.line)}</span>` : s.routeName ? `<span dir="auto">${esc(s.routeName)}</span>` : ''}${
+      s.headsign ? ` <span class="muted">${t('toward', `<span dir="auto">${esc(s.headsign)}</span>`)}</span>` : ''
     }`;
   const items = rides
     .map(
       (s, i) => `
       <li><span class="dot">${i === 0 ? '🚏' : '🔁'}</span>
-        <div>${i === 0 ? 'Go to the stop' : 'Change at'} <b dir="auto">${esc(s.from)}</b>${code(s.fromCode)}</div></li>
-      <li class="ride"><span class="dot">${icon(s)}</span>
-        <div>Take ${rideName(s)} <span class="t">at ${fmtTime(s.departAt)}</span></div></li>
+        <div>${i === 0 ? t('goToStop', stop(s.from, s.fromCode)) : t('changeAt', stop(s.from, s.fromCode))}</div></li>
+      <li class="ride"><span class="dot">${modeIcon(s.mode)}</span>
+        <div>${t('take', rideName(s), fmtTime(s.departAt))}</div></li>
       <li><span class="dot">🛑</span>
-        <div class="${i === rides.length - 1 ? 'getoff' : ''}">Get off at <b dir="auto">${esc(s.to)}</b>${code(s.toCode)} <span class="t">${fmtTime(s.arriveAt)}</span></div></li>`,
+        <div class="${i === rides.length - 1 ? 'getoff' : ''}">${t('getOff', stop(s.to, s.toCode), fmtTime(s.arriveAt))}</div></li>`,
     )
     .join('');
   return `
-    <div class="leave"><span>Leave home at</span><span class="count">${relative(r.leaveAt)}</span></div>
+    <div class="leave"><span>${t('leaveHome')}</span><span class="count">${relative(r.leaveAt)}</span></div>
     <div class="leave"><span class="when">${fmtTime(r.leaveAt)}</span></div>
     <ol class="timeline">
       ${items}
-      <li><span class="dot">🚗</span><div><b>${driverName}</b> picks you up there at <b>${fmtTime(p.meetAt)}</b></div>
-        ${r.waitMinutes >= 5 ? `<div class="detail">You’ll wait about ${r.waitMinutes} min.</div>` : ''}</li>
+      <li><span class="dot">🚗</span><div>${t('picksUp', `<span dir="auto">${driverName}</span>`, fmtTime(p.meetAt))}</div>
+        ${r.waitMinutes >= 5 ? `<div class="detail">${t('wait', r.waitMinutes)}</div>` : ''}</li>
     </ol>
     <div class="row">
       ${r.mapsUrl ? `<a class="btn ghost grow" href="${esc(r.mapsUrl)}" target="_blank" rel="noopener">Google Maps</a>` : ''}
       ${r.moovitUrl ? `<a class="btn ghost grow" href="${esc(r.moovitUrl)}" target="_blank" rel="noopener">Moovit</a>` : ''}
     </div>
-    <p class="small muted">Buses can run late. Check live times in Google Maps or Moovit before you leave.</p>`;
+    <p class="small muted">${t('busesLate')}</p>`;
 }
 
 function alternativesHtml(plan) {
   if (!plan.alternatives.length) return '';
+  const several = planDrivers(plan).length > 1;
   const rows = plan.alternatives
     .map((a) => {
-      const diff = a.extraMinutes === 0 ? 'same time' : a.extraMinutes > 0 ? `${a.extraMinutes} min later` : `${-a.extraMinutes} min earlier`;
+      const diff = a.extraMinutes === 0 ? t('sameTime') : a.extraMinutes > 0 ? t('later', a.extraMinutes) : t('earlier', -a.extraMinutes);
       const driveDiff = a.driveMinutes - plan.summary.driveMinutes;
-      const several = planDrivers(plan).length > 1;
-      return `<div class="alt"><div dir="auto">${a.pickups.map((p) => `${esc(p.rider)}: ${esc(p.place)}${several && p.driver ? ` <span class="muted">(${esc(p.driver)})</span>` : ''}`).join('<br>')}</div>
-        <div class="muted" style="text-align:end;white-space:nowrap">${diff}<br>${driveDiff === 0 ? 'same driving' : `${driveDiff > 0 ? '+' : ''}${driveDiff} min driving`}</div></div>`;
+      const place = (p) => (p.home ? t('homeOf', p.rider) : p.place);
+      return `<div class="alt"><div dir="auto">${a.pickups
+        .map((p) => `${esc(p.rider)}: ${esc(place(p))}${several && p.driver ? ` <span class="muted">(${esc(p.driver)})</span>` : ''}`)
+        .join('<br>')}</div>
+        <div class="muted" style="text-align:end;white-space:nowrap">${diff}<br>${driveDiff === 0 ? t('sameDriving') : t('drivingDiff', driveDiff)}</div></div>`;
     })
     .join('');
-  return `<details class="card"><summary>Other options</summary><div style="margin-top:8px">${rows}</div>
-    <p class="small muted">Change <i>What matters most?</i> in the trip settings to weigh total time against driving.</p></details>`;
+  return `<details class="card"><summary>${t('otherOptions')}</summary><div style="margin-top:8px">${rows}</div>
+    <p class="small muted">${t('altNote')}</p></details>`;
 }
 
 // ---------- map ----------
@@ -622,23 +651,26 @@ function drawMap(plan) {
     for (const g of r.geometry) {
       add(L.polyline(g.coords, { color: brand, weight: g.mode === 'walk' ? 3 : 5, dashArray: g.mode === 'walk' ? '4 8' : null, opacity: 0.9 }), g.coords);
     }
-    add(L.circleMarker([r.origin.lat, r.origin.lon], { radius: 6, color: brand, fillOpacity: 1 }).bindTooltip(r.name), [[r.origin.lat, r.origin.lon]]);
+    add(L.circleMarker([r.origin.lat, r.origin.lon], { radius: 6, color: brand, fillOpacity: 1 }).bindTooltip(esc(r.name)), [[r.origin.lat, r.origin.lon]]);
   }
   planDrivers(plan).forEach((d, i) => {
     const color = carColors[i % carColors.length];
     if (d.route) add(L.polyline(d.route.coordinates, { color, weight: 5, opacity: 0.85 }), d.route.coordinates);
-    add(L.circleMarker([d.origin.lat, d.origin.lon], { radius: 7, color, fillOpacity: 1 }).bindTooltip(`${d.name} (driver)`), [[d.origin.lat, d.origin.lon]]);
+    add(L.circleMarker([d.origin.lat, d.origin.lon], { radius: 7, color, fillOpacity: 1 }).bindTooltip(esc(t('driverTip', d.name))), [[d.origin.lat, d.origin.lon]]);
     d.stops.forEach((s, j) =>
-      add(L.marker([s.lat, s.lon]).bindPopup(`<b>${j + 1}. ${esc(s.name)}</b><br>${fmtTime(s.eta)} · ${esc(d.name)} picks up ${esc(s.riders.join(', '))}`), [[s.lat, s.lon]]),
+      add(
+        L.marker([s.lat, s.lon]).bindPopup(`<b>${j + 1}. ${esc(stopName(s))}</b><br>${fmtTime(s.eta)} · ${esc(t('popupPicks', d.name, t('list', s.riders)))}`),
+        [[s.lat, s.lon]],
+      ),
     );
   });
   const first = planDrivers(plan)[0];
   for (const w of first.waypoints || []) {
-    add(L.circleMarker([w.lat, w.lon], { radius: 7, color: '#334155', fillOpacity: 1 }).bindTooltip(`Stop: ${w.label}`), [[w.lat, w.lon]]);
+    add(L.circleMarker([w.lat, w.lon], { radius: 7, color: '#334155', fillOpacity: 1 }).bindTooltip(esc(t('stopTip', w.label))), [[w.lat, w.lon]]);
   }
   if (first.destination) {
     const p = first.destination;
-    add(L.circleMarker([p.lat, p.lon], { radius: 8, color: '#111827', fillOpacity: 1 }).bindTooltip(`🏁 ${p.label || 'Destination'}`), [[p.lat, p.lon]]);
+    add(L.circleMarker([p.lat, p.lon], { radius: 8, color: '#111827', fillOpacity: 1 }).bindTooltip(`🏁 ${esc(p.label || t('destination'))}`), [[p.lat, p.lon]]);
   }
   if (bounds.length) map.fitBounds(bounds, { padding: [24, 24] });
 }
@@ -681,7 +713,7 @@ function bindTrip() {
     try {
       state.trip = (await api('PATCH', `/api/trips/${trip.id}/participants/${state.me}`, { place })).trip;
       renderTrip();
-      toast('Location saved');
+      toast(t('locSaved'));
     } catch (err) {
       toast(err.message);
     }
@@ -689,7 +721,7 @@ function bindTrip() {
   q('gpsBtn')?.addEventListener('click', async (e) => {
     const b = e.currentTarget;
     b.disabled = true;
-    b.innerHTML = '<span class="spinner"></span> Finding you…';
+    b.innerHTML = `<span class="spinner"></span> ${t('findingYou')}`;
     try {
       const pos = await getGps();
       const { label } = await api('GET', `/api/reverse?lat=${pos.lat}&lon=${pos.lon}`);
@@ -697,13 +729,13 @@ function bindTrip() {
     } catch (err) {
       const help = q('gpsHelp');
       if (err.denied && help) {
-        help.innerHTML = `<strong>Location is blocked.</strong> ${esc(locationHelp())}<br>Or search for your address below.`;
+        help.innerHTML = `<strong>${t('locBlockedTitle')}</strong> ${esc(locationHelp())}<br>${t('orSearch')}`;
         help.hidden = false;
       } else {
         toast(err.message, 4000);
       }
       b.disabled = false;
-      b.textContent = '📍 Use my current location';
+      b.textContent = t('useGps');
     }
   });
   bindSearch(q('searchForm'), q('searchInput'), q('searchResults'), setMyPlace);
@@ -713,7 +745,7 @@ function bindTrip() {
   $app.querySelectorAll('[data-remove]').forEach((b) =>
     b.addEventListener('click', async () => {
       const p = trip.participants.find((x) => x.id === b.dataset.remove);
-      if (!p || !confirm(`Remove ${p.name} from this trip?`)) return;
+      if (!p || !confirm(t('confirmRemove', p.name))) return;
       state.trip = (await api('DELETE', `/api/trips/${trip.id}/participants/${p.id}`)).trip;
       renderTrip();
     }),
@@ -788,17 +820,17 @@ function bindSearch(form, input, list, onPick) {
     const text = input.value.trim();
     if (text.length < 2) return;
     list.hidden = false;
-    list.innerHTML = '<li><button disabled><span class="spinner"></span> Searching…</button></li>';
+    list.innerHTML = `<li><button disabled><span class="spinner"></span> ${t('searching')}</button></li>`;
     try {
       const { results } = await api('GET', `/api/geocode?q=${encodeURIComponent(text)}`);
       if (!results.length) {
-        list.innerHTML = '<li><button disabled>Nothing found. Try adding the city name.</button></li>';
+        list.innerHTML = `<li><button disabled>${t('nothingFound')}</button></li>`;
         return;
       }
       list.innerHTML = results
         .map(
           (r, i) =>
-            `<li><button type="button" data-i="${i}"><span class="kind">${{ stop: '🚏 stop', address: '🏠 address', place: '📍 place' }[r.type]}</span><span dir="auto">${esc(r.label)}</span></button></li>`,
+            `<li><button type="button" data-i="${i}"><span class="kind">${t(`kind.${r.type}`)}</span><span dir="auto">${esc(r.label)}</span></button></li>`,
         )
         .join('');
       list.querySelectorAll('[data-i]').forEach((b) =>
@@ -839,10 +871,10 @@ async function askPermissionsFirst(next) {
   $app.innerHTML = `
     <section class="card hero perm">
       <div class="perm-icon" aria-hidden="true">📍</div>
-      <h1>Allow your location</h1>
-      <p>So you don't have to type your address. Only the people in your trip see it.</p>
-      <button id="permAllow" class="btn block big">📍 Allow location</button>
-      <button id="permSkip" class="btn ghost block" style="margin-top:10px">Not now</button>
+      <h1>${t('permTitle')}</h1>
+      <p>${t('permText')}</p>
+      <button id="permAllow" class="btn block big">${t('permAllow')}</button>
+      <button id="permSkip" class="btn ghost block" style="margin-top:10px">${t('permSkip')}</button>
     </section>`;
 
   const done = () => {
@@ -854,7 +886,7 @@ async function askPermissionsFirst(next) {
     e.currentTarget.disabled = true;
     try {
       await getGps();
-      toast('Location allowed ✓');
+      toast(t('permAllowed'));
     } catch {
       /* whatever they answered, carry on; "Use my location" explains how to unblock */
     }
@@ -867,4 +899,5 @@ async function askPermissionsFirst(next) {
 if ('serviceWorker' in navigator) {
   window.addEventListener('load', () => navigator.serviceWorker.register('/sw.js').catch(() => {}));
 }
+renderChrome();
 askPermissionsFirst(route);
