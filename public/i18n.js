@@ -121,6 +121,19 @@ const STRINGS = {
     sumBack: '↩ back',
     sumStops: (n) => (n === 1 ? '1 stop' : `${n} stops`),
 
+    // organizer & confirming
+    organizer: 'organizer',
+    onlyOrganizer: (name) => `Only ${name} (the organizer) can change these.`,
+    confirmPlan: '✅ Confirm this plan',
+    confirmHint: 'Once confirmed, nobody can recalculate until you unlock it.',
+    waitingConfirm: (name) => `Waiting for ${name} to confirm the plan.`,
+    confirmedBy: (name, time) => `Plan confirmed by ${name} at ${time}`,
+    changedAfterLock: (name) => `Something changed after the plan was confirmed. ${name} can update it.`,
+    changedAfterLockOrg: 'Something changed after you confirmed. Unlock and recalculate if needed.',
+    unlock: '🔓 Unlock to change the plan',
+    unlockConfirm: 'Unlock the plan? Anyone will be able to recalculate it again.',
+    planChanged: 'The plan changed since you last looked. Check your times again.',
+
     // results
     stale: 'Something changed since this plan was made. Tap <b>Recalculate</b>.',
     firstCarLeaves: 'First car leaves',
@@ -220,6 +233,10 @@ const STRINGS = {
         `Not enough seats: ${riders} people need a ride but the cars have ${seats} free seat${seats === 1 ? '' : 's'}. Drivers can change their seats under Your location.`,
       timePassed: 'The arrival time has already passed. Choose a later time in Trip settings.',
       noPlan: 'Could not find a drivable plan. Check that everyone is in a reachable place.',
+      organizerOnly: 'Only the organizer can do this.',
+      organizerStays: 'The organizer can’t be removed.',
+      planLocked: 'The plan is confirmed. The organizer can unlock it to recalculate.',
+      planStale: 'Recalculate before confirming.',
     },
     // plan notes (by code)
     note: {
@@ -341,6 +358,18 @@ const STRINGS = {
     sumBack: '↩ חזרה',
     sumStops: (n) => (n === 1 ? 'עצירה אחת' : `${n} עצירות`),
 
+    organizer: 'מארגן/ת',
+    onlyOrganizer: (name) => `רק ${name} (המארגן/ת) יכול/ה לשנות את אלה.`,
+    confirmPlan: '✅ אישור התכנון',
+    confirmHint: 'אחרי האישור אף אחד לא יכול לחשב מחדש עד שתפתחו אותו.',
+    waitingConfirm: (name) => `מחכים ש${name} יאשר/תאשר את התכנון.`,
+    confirmedBy: (name, time) => `התכנון אושר ע״י ${name} ב-${time}`,
+    changedAfterLock: (name) => `משהו השתנה אחרי שהתכנון אושר. ${name} יכול/ה לעדכן אותו.`,
+    changedAfterLockOrg: 'משהו השתנה אחרי שאישרתם. אפשר לפתוח ולחשב מחדש אם צריך.',
+    unlock: '🔓 פתיחת התכנון לשינויים',
+    unlockConfirm: 'לפתוח את התכנון? כולם יוכלו לחשב אותו מחדש.',
+    planChanged: 'התכנון השתנה מאז שהסתכלתם. בדקו שוב את הזמנים שלכם.',
+
     stale: 'משהו השתנה מאז שהתכנון נעשה. הקישו על <b>חישוב מחדש</b>.',
     firstCarLeaves: 'הרכב הראשון יוצא',
     driverLeaves: 'הנהג יוצא',
@@ -433,6 +462,10 @@ const STRINGS = {
         `אין מספיק מקומות: ${riders} אנשים צריכים איסוף, וברכבים יש ${seats} מקומות פנויים. נהגים יכולים לשנות את מספר המקומות תחת ״המיקום שלכם״.`,
       timePassed: 'שעת ההגעה כבר עברה. בחרו שעה מאוחרת יותר בהגדרות הנסיעה.',
       noPlan: 'לא נמצא תכנון אפשרי. בדקו שכולם נמצאים במקום שאפשר להגיע אליו ברכב.',
+      organizerOnly: 'רק המארגן/ת יכול/ה לעשות את זה.',
+      organizerStays: 'אי אפשר להסיר את המארגן/ת.',
+      planLocked: 'התכנון אושר. המארגן/ת יכול/ה לפתוח אותו כדי לחשב מחדש.',
+      planStale: 'צריך לחשב מחדש לפני האישור.',
     },
     note: {
       noTransit: ({ name }) => `לא נמצאה תחבורה ציבורית עבור ${name} בשעה הזו, אז האיסוף יהיה מהמיקום של ${name}.`,

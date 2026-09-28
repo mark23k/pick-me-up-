@@ -54,10 +54,13 @@ const storage = {
   },
 };
 const myIdFor = (tripId) => storage.get('pp:me', {})[tripId] || null;
-function rememberMe(tripId, pid) {
+// secret per trip that proves "this phone is that person" (sent as X-Key)
+const myKeyFor = (tripId) => storage.get('pp:keys', {})[tripId] || null;
+function rememberMe(tripId, pid, key) {
   const all = storage.get('pp:me', {});
   all[tripId] = pid;
   storage.set('pp:me', all);
+  if (key) storage.set('pp:keys', { ...storage.get('pp:keys', {}), [tripId]: key });
 }
 
 /** Server errors and plan notes come with a code; show them in the viewer's language. */
@@ -67,9 +70,11 @@ const noteText = (n) =>
   typeof n === 'string' ? n : hasT(`note.${n.code}`) ? t(`note.${n.code}`, n.params || {}, t, fmtWhen) : n.text;
 
 async function api(method, url, body) {
+  const tripId = url.match(/^\/api\/trips\/([\w-]+)/)?.[1];
+  const key = tripId && myKeyFor(tripId);
   const res = await fetch(url, {
     method,
-    headers: body ? { 'Content-Type': 'application/json' } : undefined,
+    headers: { ...(body ? { 'Content-Type': 'application/json' } : {}), ...(key ? { 'X-Key': key } : {}) },
     body: body ? JSON.stringify(body) : undefined,
   });
   const data = await res.json().catch(() => ({}));
@@ -118,6 +123,9 @@ const state = {
 
 const meP = () => state.trip?.participants.find((p) => p.id === state.me) || null;
 const driverP = () => state.trip?.participants.find((p) => p.role === 'driver') || null;
+// trips from before organizers existed are open to everyone
+const isOrganizer = () => !state.trip?.organizerId || state.trip.organizerId === state.me;
+const organizerName = () => state.trip?.participants.find((p) => p.id === state.trip.organizerId)?.name || '';
 
 // ---------- routing ----------
 
@@ -253,7 +261,7 @@ function renderHome() {
     }
     storage.set('pp:name', name);
     try {
-      const { trip, participantId } = await api('POST', '/api/trips', {
+      const { trip, participantId, key } = await api('POST', '/api/trips', {
         name,
         role: draft.role,
         destination: draft.dest,
@@ -261,7 +269,7 @@ function renderHome() {
         arriveBy,
       });
       Object.assign(homeDraft, { dest: null, stops: [], arrive: '' });
-      rememberMe(trip.id, participantId);
+      rememberMe(trip.id, participantId, key);
       history.pushState(null, '', `/t/${trip.id}`);
       route();
     } catch (err) {
@@ -341,15 +349,43 @@ function renderTrip() {
     ${settingsCard()}
     <section class="stack" style="margin-bottom:14px">
       ${state.error ? `<div class="banner error">${esc(state.error)}</div>` : ''}
-      <button id="planBtn" class="btn big block" ${canPlan && !state.busy ? '' : 'disabled'}>
-        ${state.busy ? `<span class="spinner"></span> ${t('planning')}` : trip.plan ? t('recalc') : t('findBest')}
-      </button>
-      ${!canPlan ? `<p class="small muted" style="text-align:center">${esc(planBlocker())}</p>` : ''}
+      ${planControls(canPlan)}
     </section>
     <div id="results">${trip.plan ? resultsHtml(trip.plan) : ''}</div>`;
   window.scrollTo(0, scrollY);
   bindTrip();
   if (trip.plan) drawMap(trip.plan);
+}
+
+/** Find / recalculate, confirm, unlock, and what everyone else sees while the plan is confirmed. */
+function planControls(canPlan) {
+  const trip = state.trip;
+  const plan = trip.plan;
+  const org = isOrganizer();
+  if (trip.locked) {
+    const changed = plan?.stale
+      ? `<div class="banner warn">${org ? t('changedAfterLockOrg') : t('changedAfterLock', esc(organizerName()))}</div>`
+      : '';
+    return `
+      <div class="banner ok">✅ ${t('confirmedBy', `<b dir="auto">${esc(trip.locked.by)}</b>`, fmtTime(trip.locked.at))}</div>
+      ${changed}
+      ${org ? `<button id="unlockBtn" class="btn ghost block">${t('unlock')}</button>` : ''}`;
+  }
+  const planBtn = `
+    <button id="planBtn" class="btn big block ${plan && !plan.stale && org && trip.organizerId ? 'ghost' : ''}" ${canPlan && !state.busy ? '' : 'disabled'}>
+      ${state.busy ? `<span class="spinner"></span> ${t('planning')}` : plan ? t('recalc') : t('findBest')}
+    </button>`;
+  const confirm =
+    plan && !plan.stale && trip.organizerId
+      ? org
+        ? `<button id="confirmBtn" class="btn big block">${t('confirmPlan')}</button><p class="small muted" style="text-align:center">${t('confirmHint')}</p>`
+        : `<p class="small muted" style="text-align:center">${t('waitingConfirm', esc(organizerName()))}</p>`
+      : '';
+  return `
+    ${confirm && org ? confirm : ''}
+    ${planBtn}
+    ${confirm && !org ? confirm : ''}
+    ${!canPlan ? `<p class="small muted" style="text-align:center">${esc(planBlocker())}</p>` : ''}`;
 }
 
 function planBlocker() {
@@ -412,12 +448,18 @@ function peopleCard() {
         <div class="avatar ${p.role}">${esc(p.name.slice(0, 1).toUpperCase())}</div>
         <div class="person-main">
           <div><span dir="auto">${esc(p.name)}</span>${p.id === state.me ? ` <span class="muted small">${t('you')}</span>` : ''}${
+            p.id === tr.organizerId ? ` <span class="muted small">· ${t('organizer')}</span>` : ''
+          }${
             p.role === 'driver' ? ` <span class="muted small">· ${t('seats', p.seats || 4)}</span>` : ''
           }</div>
           <div class="where" dir="auto">${p.place ? esc(p.place.label) : t('noLocYet')}</div>
         </div>
         <span class="badge ${p.place ? 'ok' : 'warn'}">${p.role === 'driver' ? '🚗 ' : '🚌 '}${p.place ? t('ready') : t('waiting')}</span>
-        ${p.id !== state.me ? `<button class="btn danger-text" data-remove="${esc(p.id)}" aria-label="${esc(t('removeAria', p.name))}">✕</button>` : ''}
+        ${
+          p.id !== state.me && p.id !== tr.organizerId && isOrganizer()
+            ? `<button class="btn danger-text" data-remove="${esc(p.id)}" aria-label="${esc(t('removeAria', p.name))}">✕</button>`
+            : ''
+        }
       </li>`,
     )
     .join('');
@@ -433,6 +475,21 @@ function settingsCard() {
   const tr = state.trip;
   const d = tr.destination || { type: 'driverStart' };
   const pr = tr.priority || 'balanced';
+  const destText = d.type === 'custom' && d.place ? '🏁 ' + esc(d.place.label) : d.type === 'none' ? t('nowhere') : t('backToStart');
+  if (!isOrganizer()) {
+    const prName = { fastest: t('prFastest'), balanced: t('prBalanced'), lessDriving: t('prLessDriving') }[pr];
+    return `
+    <details class="card" id="settings" ${storage.get('pp:settingsOpen', false) ? 'open' : ''}>
+      <summary>${t('settings')} <span class="small muted" style="margin-inline-start:auto;margin-inline-end:8px" dir="auto">${esc(settingsSummary())}</span></summary>
+      <dl class="facts">
+        <dt>${t('beThereBy')}</dt><dd>${tr.arriveBy ? fmtWhen(tr.arriveBy) : t('asap')}</dd>
+        <dt>${t('goingTo')}</dt><dd dir="auto">${destText}</dd>
+        ${(tr.stops || []).length ? `<dt>${t('stopsOnWay')}</dt><dd dir="auto">${esc(tr.stops.map((x) => x.label).join(' · '))}</dd>` : ''}
+        <dt>${t('priority')}</dt><dd>${prName}</dd>
+      </dl>
+      <p class="small muted">${t('onlyOrganizer', `<b dir="auto">${esc(organizerName())}</b>`)}</p>
+    </details>`;
+  }
   return `
     <details class="card" id="settings" ${storage.get('pp:settingsOpen', false) ? 'open' : ''}>
       <summary>${t('settings')} <span class="small muted" style="margin-inline-start:auto;margin-inline-end:8px" dir="auto">${esc(settingsSummary())}</span></summary>
@@ -443,7 +500,7 @@ function settingsCard() {
       </div>
       ${tr.arriveBy ? '' : `<p class="small muted" style="margin:6px 0 0">${t('noTimeSet')}</p>`}
       <label for="destInput">${t('goingTo')}</label>
-      <p class="small chosen" dir="auto">${d.type === 'custom' && d.place ? '🏁 ' + esc(d.place.label) : d.type === 'none' ? t('nowhere') : t('backToStart')}</p>
+      <p class="small chosen" dir="auto">${destText}</p>
       ${pickerHtml('dest', t('changeDest'))}
       <label for="stopInput">${t('stopsOnWay')}</label>
       <ol class="stop-list" id="tripStops">${stopItems(tr.stops || [])}</ol>
@@ -482,8 +539,14 @@ function resultsHtml(plan) {
   if (!state.tab || !people.some((p) => p.id === state.tab)) state.tab = people.some((p) => p.id === me) ? me : people[0].id;
   const sel = people.find((p) => p.id === state.tab);
   const s = plan.summary;
+  // tell people when the plan changed since they last looked at it
+  const seenKey = `pp:seenPlan:${state.trip.id}`;
+  const seen = storage.get(seenKey, null);
+  const changedSinceSeen = seen && seen !== plan.computedAt;
+  if (seen !== plan.computedAt) storage.set(seenKey, plan.computedAt);
   return `
-    ${plan.stale ? `<div class="banner warn">${t('stale')}</div>` : ''}
+    ${changedSinceSeen ? `<div class="banner warn">🔔 ${t('planChanged')}</div>` : ''}
+    ${plan.stale && !state.trip.locked ? `<div class="banner warn">${t('stale')}</div>` : ''}
     ${plan.notes.map((n) => `<div class="banner warn">${esc(noteText(n))}</div>`).join('')}
     <div class="summary">
       <div><b>${fmtTime(s.driverLeaveAt)}</b><span>${cars.length > 1 ? t('firstCarLeaves') : t('driverLeaves')}</span></div>
@@ -712,7 +775,7 @@ function bindTrip() {
       storage.set('pp:name', name);
       try {
         const res = await api('POST', `/api/trips/${trip.id}/participants`, { name, role });
-        rememberMe(trip.id, res.participantId);
+        rememberMe(trip.id, res.participantId, res.key);
         state.me = res.participantId;
         state.trip = res.trip;
         renderTrip();
@@ -819,6 +882,7 @@ function bindTrip() {
     renderTrip();
     try {
       state.trip = (await api('POST', `/api/trips/${trip.id}/plan`)).trip;
+      storage.set(`pp:seenPlan:${trip.id}`, state.trip.plan.computedAt); // you made this change yourself
       state.tab = null;
       state.busy = false;
       renderTrip();
@@ -829,6 +893,17 @@ function bindTrip() {
       renderTrip();
     }
   });
+
+  const post = async (path) => {
+    try {
+      state.trip = (await api('POST', `/api/trips/${trip.id}/${path}`, {})).trip;
+      renderTrip();
+    } catch (err) {
+      toast(err.message);
+    }
+  };
+  q('confirmBtn')?.addEventListener('click', () => post('confirm'));
+  q('unlockBtn')?.addEventListener('click', () => confirm(t('unlockConfirm')) && post('unlock'));
 
   // result tabs
   $app.querySelectorAll('[data-tab]').forEach((b) =>

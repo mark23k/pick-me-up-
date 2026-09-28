@@ -10,7 +10,7 @@ store.useBlobs();
 export default async (req) => {
   const url = new URL(req.url);
   const body = req.method === 'GET' || req.method === 'HEAD' ? '' : await req.text();
-  const [status, data] = await handleApi({ method: req.method, url, body });
+  const [status, data] = await handleApi({ method: req.method, url, body, key: req.headers.get('x-key') });
   return Response.json(data, { status, headers: { 'Cache-Control': 'no-store' } });
 };
 

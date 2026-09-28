@@ -205,3 +205,9 @@ details[open] summary::after { content: "▴"; }
 /* Hebrew: a font with good Hebrew letterforms, and keep times / line numbers left-to-right */
 :root[lang="he"] body { font-family: "Rubik", system-ui, -apple-system, "Segoe UI", Arial, sans-serif; }
 .t, .when, .line-no, .summary b { unicode-bidi: isolate; direction: ltr; }
+
+.banner.ok { background: color-mix(in srgb, var(--brand) 12%, var(--card)); border: 1px solid color-mix(in srgb, var(--brand) 35%, transparent); }
+/* read-only trip settings for non-organizers */
+.facts { display: grid; grid-template-columns: auto 1fr; gap: 6px 12px; margin: 12px 0 8px; }
+.facts dt { color: var(--muted); font-size: .88rem; }
+.facts dd { margin: 0; font-weight: 600; }

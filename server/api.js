@@ -66,6 +66,27 @@ async function getTrip(id) {
   return trip;
 }
 
+// ---------- who may do what ----------
+// Each phone gets a secret key when it creates or joins a trip (sent back as X-Key).
+// Keys never leave the server in trip data. Trips from before keys existed stay open to all.
+
+const actorOf = (trip, key) => (key ? trip.participants.find((p) => p.key && p.key === key) : null) || null;
+const isOrganizer = (trip, key) => !trip.organizerId || actorOf(trip, key)?.id === trip.organizerId;
+
+function requireOrganizer(trip, key) {
+  if (!isOrganizer(trip, key)) throw new HttpError(403, 'Only the organizer can do this', 'organizerOnly');
+}
+
+/** You can change yourself; the organizer can change anyone. */
+function requireSelfOrOrganizer(trip, key, pid) {
+  const p = trip.participants.find((x) => x.id === pid);
+  if (!p?.key || isOrganizer(trip, key) || actorOf(trip, key)?.id === pid) return;
+  throw new HttpError(403, 'Only that person or the organizer can do this', 'organizerOnly');
+}
+
+/** Trip as sent to the app: without anyone's key. */
+const publicTrip = (trip) => ({ ...trip, participants: trip.participants.map(({ key, ...p }) => p) });
+
 /** Any change to who/where/when makes the old plan stale. */
 async function touch(trip, { invalidatePlan = true } = {}) {
   trip.updatedAt = new Date().toISOString();
@@ -80,6 +101,7 @@ const routes = [
   ['POST', /^\/api\/trips$/, async (b) => {
     const creator = {
       id: newId(),
+      key: newId(12),
       name: cleanName(b.name) || 'Me',
       role: b.role === 'rider' ? 'rider' : 'driver',
       place: cleanPlace(b.place),
@@ -97,17 +119,20 @@ const routes = [
       destination: destPlace ? { type: 'custom', place: destPlace } : { type: 'driverStart' },
       stops: cleanStops(b.stops || []),
       participants: [creator],
+      organizerId: creator.id,
+      locked: null, // { at, by } once the organizer confirms the plan
       plan: null,
     };
     await store.save(trip);
-    return [201, { trip, participantId: creator.id }];
+    return [201, { trip, participantId: creator.id, key: creator.key }];
   }],
 
   ['GET', /^\/api\/trips\/([\w-]+)$/, async (b, [id]) => [200, { trip: await getTrip(id) }]],
 
   // trip settings
-  ['PATCH', /^\/api\/trips\/([\w-]+)$/, async (b, [id]) => {
+  ['PATCH', /^\/api\/trips\/([\w-]+)$/, async (b, [id], _url, { key }) => {
     const trip = await getTrip(id);
+    requireOrganizer(trip, key);
     if ('title' in b) trip.title = cleanName(b.title);
     if ('departAfter' in b) trip.departAfter = cleanTime(b.departAfter);
     if ('arriveBy' in b) trip.arriveBy = cleanTime(b.arriveBy);
@@ -131,18 +156,19 @@ const routes = [
     const trip = await getTrip(id);
     const role = b.role === 'driver' ? 'driver' : 'rider';
     checkRoomFor(trip, role);
-    const p = { id: newId(), name: cleanName(b.name) || `Rider ${trip.participants.length}`, role, place: cleanPlace(b.place) };
+    const p = { id: newId(), key: newId(12), name: cleanName(b.name) || `Rider ${trip.participants.length}`, role, place: cleanPlace(b.place) };
     if (role === 'driver') p.seats = cleanSeats(b.seats);
     trip.participants.push(p);
     await touch(trip);
-    return [201, { trip, participantId: p.id }];
+    return [201, { trip, participantId: p.id, key: p.key }];
   }],
 
   // update own name / role / location
-  ['PATCH', /^\/api\/trips\/([\w-]+)\/participants\/([\w-]+)$/, async (b, [id, pid]) => {
+  ['PATCH', /^\/api\/trips\/([\w-]+)\/participants\/([\w-]+)$/, async (b, [id, pid], _url, { key }) => {
     const trip = await getTrip(id);
     const p = trip.participants.find((x) => x.id === pid);
     if (!p) throw new HttpError(404, 'Participant not found', 'participantNotFound');
+    requireSelfOrOrganizer(trip, key, pid);
     if ('name' in b) p.name = cleanName(b.name) || p.name;
     if ('place' in b) p.place = cleanPlace(b.place);
     if ('role' in b && b.role !== p.role) {
@@ -156,8 +182,10 @@ const routes = [
     return [200, { trip }];
   }],
 
-  ['DELETE', /^\/api\/trips\/([\w-]+)\/participants\/([\w-]+)$/, async (b, [id, pid]) => {
+  ['DELETE', /^\/api\/trips\/([\w-]+)\/participants\/([\w-]+)$/, async (b, [id, pid], _url, { key }) => {
     const trip = await getTrip(id);
+    requireSelfOrOrganizer(trip, key, pid);
+    if (pid === trip.organizerId) throw new HttpError(400, 'The organizer can’t be removed', 'organizerStays');
     trip.participants = trip.participants.filter((x) => x.id !== pid);
     await touch(trip);
     return [200, { trip }];
@@ -166,6 +194,9 @@ const routes = [
   // compute the plan
   ['POST', /^\/api\/trips\/([\w-]+)\/plan$/, async (b, [id]) => {
     const trip = await getTrip(id);
+    if (trip.locked) {
+      throw new HttpError(409, 'The plan is confirmed. The organizer can unlock it to recalculate.', 'planLocked');
+    }
     const drivers = trip.participants.filter((p) => p.role === 'driver');
     if (!drivers.length) throw new HttpError(400, 'Someone needs to join as a driver.', 'needDriver');
     const riders = trip.participants.filter((p) => p.role === 'rider');
@@ -189,6 +220,24 @@ const routes = [
     return [200, { trip }];
   }],
 
+  // the organizer confirms the current plan: nobody can recalculate until they unlock it
+  ['POST', /^\/api\/trips\/([\w-]+)\/confirm$/, async (b, [id], _url, { key }) => {
+    const trip = await getTrip(id);
+    requireOrganizer(trip, key);
+    if (!trip.plan || trip.plan.stale) throw new HttpError(409, 'Recalculate before confirming', 'planStale');
+    trip.locked = { at: new Date().toISOString(), by: actorOf(trip, key)?.name || '' };
+    await touch(trip, { invalidatePlan: false });
+    return [200, { trip }];
+  }],
+
+  ['POST', /^\/api\/trips\/([\w-]+)\/unlock$/, async (b, [id], _url, { key }) => {
+    const trip = await getTrip(id);
+    requireOrganizer(trip, key);
+    trip.locked = null;
+    await touch(trip, { invalidatePlan: false });
+    return [200, { trip }];
+  }],
+
   ['GET', /^\/api\/geocode$/, async (_b, _m, url) => {
     const q = (url.searchParams.get('q') || '').trim();
     if (q.length < 2) return [200, { results: [] }];
@@ -204,15 +253,16 @@ const routes = [
 
 /**
  * Handle one API request.
- * @param {{method: string, url: URL, body?: string}} req
+ * @param {{method: string, url: URL, body?: string, key?: string}} req  key = the X-Key header
  * @returns {Promise<[number, object]>} status and JSON body
  */
-async function handleApi({ method, url, body }) {
+async function handleApi({ method, url, body, key = null }) {
   for (const [m, pattern, handler] of routes) {
     const match = url.pathname.match(pattern);
     if (!match || method !== m) continue;
     try {
-      return await handler(method === 'GET' ? {} : parseBody(body), match.slice(1), url);
+      const [status, out] = await handler(method === 'GET' ? {} : parseBody(body), match.slice(1), url, { key });
+      return [status, out.trip ? { ...out, trip: publicTrip(out.trip) } : out];
     } catch (e) {
       if (!(e instanceof HttpError)) console.error(e);
       return [e.status || 502, { error: e.message || 'Something went wrong', code: e.code || 'generic', params: e.params || {} }];

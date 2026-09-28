@@ -57,7 +57,7 @@ const server = http.createServer(async (req, res) => {
   const url = new URL(req.url, `http://${req.headers.host || 'localhost'}`);
   if (!url.pathname.startsWith('/api/')) return serveStatic(url, res);
   const body = req.method === 'GET' ? '' : await readBody(req);
-  const [status, data] = await handleApi({ method: req.method, url, body });
+  const [status, data] = await handleApi({ method: req.method, url, body, key: req.headers['x-key'] || null });
   send(res, status, data);
 });
 if (require.main === module) {
