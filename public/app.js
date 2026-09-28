@@ -565,6 +565,19 @@ function driverView(d, plan) {
     <p class="small muted">${t('wazeNote')}${waypoints ? t('eachStop10') : ''}</p>`;
 }
 
+/** Opens the Moovit app on the route home → pickup stop (Moovit's documented deep link). */
+const moovitAppUrl = (r) =>
+  `moovit://directions?${new URLSearchParams({
+    orig_lat: r.origin.lat,
+    orig_lon: r.origin.lon,
+    orig_name: r.origin.label || '',
+    dest_lat: r.pickup.lat,
+    dest_lon: r.pickup.lon,
+    dest_name: r.pickup.name,
+    auto_run: 'true',
+    partner_id: 'PickupPlanner',
+  })}`;
+
 const modeKey = (mode) => (/RAIL|SUBURBAN|LONG_DISTANCE/.test(mode || '') ? 'RAIL' : mode);
 const modeName = (mode) => (hasT(`mode.${modeKey(mode)}`) ? t(`mode.${modeKey(mode)}`) : t('mode.other'));
 const modeIcon = (mode) => ({ RAIL: '🚆', TRAM: '🚊', SUBWAY: '🚇', FERRY: '⛴️' })[modeKey(mode)] || '🚌';
@@ -606,7 +619,7 @@ function riderView(r, plan) {
     </ol>
     <div class="row">
       ${r.mapsUrl ? `<a class="btn ghost grow" href="${esc(r.mapsUrl)}" target="_blank" rel="noopener">Google Maps</a>` : ''}
-      ${r.moovitUrl ? `<a class="btn ghost grow" href="${esc(r.moovitUrl)}" target="_blank" rel="noopener">Moovit</a>` : ''}
+      ${r.moovitUrl ? `<a class="btn ghost grow" href="${esc(r.moovitUrl)}" data-app-url="${esc(moovitAppUrl(r))}" target="_blank" rel="noopener">Moovit</a>` : ''}
     </div>
     <p class="small muted">${t('busesLate')}</p>`;
 }
@@ -783,6 +796,17 @@ function bindTrip() {
       toast(err.message);
     }
   });
+  // app links: try the installed app, fall back to the website if nothing opened
+  $app.querySelectorAll('[data-app-url]').forEach((a) =>
+    a.addEventListener('click', (e) => {
+      e.preventDefault();
+      const fallback = setTimeout(() => {
+        if (!document.hidden) window.open(a.href, '_blank', 'noopener');
+      }, 1500);
+      document.addEventListener('visibilitychange', () => document.hidden && clearTimeout(fallback), { once: true });
+      location.href = a.dataset.appUrl;
+    }),
+  );
   q('prSeg')?.addEventListener('click', (e) => {
     const b = e.target.closest('button');
     if (b) patch({ priority: b.dataset.pr });
