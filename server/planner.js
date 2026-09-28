@@ -109,6 +109,32 @@ class PlanError extends Error {
 }
 const note = (code, params, text) => ({ code, params, text });
 
+// ---------- Shabbat and holidays ----------
+
+// Yom tov days (Israel) on which buses don't run, as Hebrew-calendar "Month day".
+const YOM_TOV = new Set(['Tishri 1', 'Tishri 2', 'Tishri 10', 'Tishri 15', 'Tishri 22', 'Nisan 15', 'Nisan 21', 'Sivan 6']);
+const ilWeekday = new Intl.DateTimeFormat('en-US', { timeZone: 'Asia/Jerusalem', weekday: 'short' });
+const ilHour = new Intl.DateTimeFormat('en-US', { timeZone: 'Asia/Jerusalem', hour: 'numeric', hourCycle: 'h23' });
+const hebrewDay = new Intl.DateTimeFormat('en-u-ca-hebrew', { timeZone: 'Asia/Jerusalem', month: 'long', day: 'numeric' });
+
+function restDay(ms) {
+  const d = new Date(ms);
+  const heb = Object.fromEntries(hebrewDay.formatToParts(d).map((p) => [p.type, p.value]));
+  if (YOM_TOV.has(`${heb.month} ${heb.day}`)) return 'holiday';
+  return ilWeekday.format(d) === 'Sat' ? 'shabbat' : null;
+}
+
+/**
+ * 'shabbat' | 'holiday' | null: whether buses are mostly not running at this time.
+ * Service stops around 14:00-16:00 the day before and resumes about 20:00 after.
+ */
+function restTime(ms) {
+  const hour = Number(ilHour.format(new Date(ms))) % 24;
+  if (hour < 20 && restDay(ms)) return restDay(ms);
+  if (hour >= 14) return restDay(ms + 24 * 3600e3);
+  return null;
+}
+
 const isTransitLeg = (leg) => Boolean(leg.tripId || leg.routeShortName);
 const t = (iso) => Date.parse(iso);
 
@@ -511,11 +537,10 @@ async function planTrip(input, providers) {
 
   const fixed = points.length;
   const perRiderLimit = Math.max(4, Math.min(24, Math.floor((MAX_MATRIX_POINTS - fixed) / riders.length)));
+  const noTransit = [];
   const riderCands = riders.map((r, i) => {
     const all = extractCandidates(r, itinsPerRider[i], t0);
-    if (all.length === 1 && !slowFor.has(r.name)) {
-      notes.push(note('noTransit', { name: r.name }, `No public transit found for ${r.name} at this time, so a driver will pick them up at their location.`));
-    }
+    if (all.length === 1 && !slowFor.has(r.name)) noTransit.push(r.name);
     return pruneCandidates(all, {
       driverOrigins: drivers.map((d) => d.place),
       destination: heading,
@@ -523,6 +548,21 @@ async function planTrip(input, providers) {
       limit: perRiderLimit,
     });
   });
+  // On Shabbat / holidays say so once, instead of a "no transit" note per rider.
+  const rest = restTime(t0) || (target ? restTime(target) : null);
+  if (noTransit.length && rest) {
+    notes.push(
+      note(
+        'restDay',
+        { kind: rest, names: noTransit },
+        `${rest === 'shabbat' ? "It's Shabbat" : "It's a holiday"}, so almost no buses are running. The driver will pick up ${noTransit.join(', ')} at home.`,
+      ),
+    );
+  } else {
+    for (const name of noTransit) {
+      notes.push(note('noTransit', { name }, `No public transit found for ${name} at this time, so a driver will pick them up at their location.`));
+    }
+  }
   if (slowFor.size) {
     const names = [...slowFor];
     const list = names.length > 1 ? `${names.slice(0, -1).join(', ')} and ${names.at(-1)}` : names[0];
@@ -858,6 +898,7 @@ async function planTrip(input, providers) {
 module.exports = {
   planTrip,
   PlanError,
+  restTime,
   optimize,
   extractCandidates,
   pruneCandidates,

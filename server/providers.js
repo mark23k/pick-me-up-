@@ -12,14 +12,47 @@ const USER_AGENT = process.env.USER_AGENT || 'pickup-planner/1.0 (github.com/pic
 // transit lookups (parallel) + matrix + route/re-plans (parallel).
 const TIMEOUT = { transit: 4500, matrix: 4000, route: 2500 };
 
+const wait = (ms) => new Promise((r) => setTimeout(r, ms));
+
+/** GET JSON within `timeoutMs` overall; one quick retry when the service says it's busy (429/503). */
 async function getJson(url, { timeoutMs = 25000 } = {}) {
-  const res = await fetch(url, {
-    headers: { 'User-Agent': USER_AGENT, Accept: 'application/json' },
-    signal: AbortSignal.timeout(timeoutMs),
-  });
-  if (!res.ok) throw new Error(`${new URL(url).host} responded ${res.status}`);
-  return res.json();
+  const deadline = Date.now() + timeoutMs;
+  for (let attempt = 0; ; attempt++) {
+    const res = await fetch(url, {
+      headers: { 'User-Agent': USER_AGENT, Accept: 'application/json' },
+      signal: AbortSignal.timeout(Math.max(1, deadline - Date.now())),
+    });
+    if (res.ok) return res.json();
+    const busy = res.status === 429 || res.status === 503;
+    if (busy && attempt === 0 && deadline - Date.now() > 1500) {
+      await wait(600);
+      continue;
+    }
+    throw new Error(`${new URL(url).host} responded ${res.status}`);
+  }
 }
+
+// Short-lived cache so Recalculate, several viewers and re-plans don't hammer the free
+// services. Lives as long as the server (or a warm Netlify Function) does.
+const cache = new Map(); // url -> { at, promise }
+const CACHE_MAX = 500;
+const TTL = { transit: 10 * 60e3, matrix: 10 * 60e3, geocode: 24 * 3600e3 };
+
+function cachedJson(url, ttlMs, opts) {
+  const hit = cache.get(url);
+  if (hit && Date.now() - hit.at < ttlMs) return hit.promise;
+  const promise = getJson(url, opts).catch((e) => {
+    cache.delete(url); // never cache failures
+    throw e;
+  });
+  cache.delete(url); // re-insert so the Map stays in age order
+  cache.set(url, { at: Date.now(), promise });
+  if (cache.size > CACHE_MAX) cache.delete(cache.keys().next().value);
+  return promise;
+}
+
+const FIVE_MIN = 5 * 60e3;
+const coord = (p) => `${Number(p.lat).toFixed(5)},${Number(p.lon).toFixed(5)}`;
 
 // ---------- Transit ----------
 
@@ -30,16 +63,20 @@ async function getJson(url, { timeoutMs = 25000 } = {}) {
  * @param {{time: Date, arriveBy?: boolean, count?: number}} opts
  */
 async function transitPlan(from, to, { time, arriveBy = false, count = 5, timeoutMs = TIMEOUT.transit }) {
+  // Round the time to 5 minutes so nearby requests share a cache entry: later for
+  // "leave after" (never suggests a bus that already left), earlier for "arrive by".
+  const ms = time.getTime();
+  const rounded = arriveBy ? Math.floor(ms / FIVE_MIN) * FIVE_MIN : Math.ceil(ms / FIVE_MIN) * FIVE_MIN;
   const qs = new URLSearchParams({
-    fromPlace: `${from.lat},${from.lon}`,
-    toPlace: `${to.lat},${to.lon}`,
-    time: time.toISOString(),
+    fromPlace: coord(from),
+    toPlace: coord(to),
+    time: new Date(rounded).toISOString(),
     arriveBy: String(arriveBy),
     numItineraries: String(count),
     maxPreTransitTime: '1200', // walk at most 20 min to the first stop
     maxPostTransitTime: '1200',
   });
-  const data = await getJson(`${TRANSIT_URL}/api/v1/plan?${qs}`, { timeoutMs });
+  const data = await cachedJson(`${TRANSIT_URL}/api/v1/plan?${qs}`, TTL.transit, { timeoutMs });
   return data.itineraries || [];
 }
 
@@ -49,7 +86,7 @@ async function transitPlan(from, to, { time, arriveBy = false, count = 5, timeou
 async function driveMatrix(points) {
   if (points.length > 100) throw new Error('driveMatrix: at most 100 points');
   const coords = points.map((p) => `${p.lon.toFixed(6)},${p.lat.toFixed(6)}`).join(';');
-  const data = await getJson(`${OSRM_URL}/table/v1/driving/${coords}?annotations=duration`, { timeoutMs: TIMEOUT.matrix });
+  const data = await cachedJson(`${OSRM_URL}/table/v1/driving/${coords}?annotations=duration`, TTL.matrix, { timeoutMs: TIMEOUT.matrix });
   if (data.code !== 'Ok') throw new Error(`OSRM table: ${data.code}`);
   return data.durations; // durations[i][j] = seconds from i to j (null if unreachable)
 }
@@ -89,8 +126,8 @@ async function geocode(text) {
     'accept-language': 'he,en',
   });
   const [t, n] = await Promise.allSettled([
-    getJson(`${TRANSIT_URL}/api/v1/geocode?${tQs}`, { timeoutMs: 10000 }),
-    getJson(`${NOMINATIM_URL}/search?${nQs}`, { timeoutMs: 10000 }),
+    cachedJson(`${TRANSIT_URL}/api/v1/geocode?${tQs}`, TTL.geocode, { timeoutMs: 10000 }),
+    cachedJson(`${NOMINATIM_URL}/search?${nQs}`, TTL.geocode, { timeoutMs: 10000 }),
   ]);
   const out = [];
   if (t.status === 'fulfilled') {
@@ -136,7 +173,7 @@ async function geocode(text) {
 async function reverseGeocode(lat, lon) {
   const qs = new URLSearchParams({ lat, lon, format: 'jsonv2', 'accept-language': 'he,en', zoom: '18' });
   try {
-    const r = await getJson(`${NOMINATIM_URL}/reverse?${qs}`, { timeoutMs: 8000 });
+    const r = await cachedJson(`${NOMINATIM_URL}/reverse?${qs}`, TTL.geocode, { timeoutMs: 8000 });
     const a = r.address || {};
     const street = [a.road, a.house_number].filter(Boolean).join(' ');
     const city = a.city || a.town || a.village || a.suburb || '';
@@ -146,4 +183,4 @@ async function reverseGeocode(lat, lon) {
   }
 }
 
-module.exports = { transitPlan, driveMatrix, driveRoute, geocode, reverseGeocode };
+module.exports = { transitPlan, driveMatrix, driveRoute, geocode, reverseGeocode, _cache: cache };

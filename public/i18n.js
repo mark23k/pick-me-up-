@@ -229,6 +229,8 @@ const STRINGS = {
       cantMakeIt: ({ target, earliest }, t, time) =>
         `You can't all get there by ${time(target)}. The earliest everyone can arrive is about ${time(earliest)}. Change the arrival time in Trip settings, or go with this plan.`,
       routeFailed: ({ name }) => `Could not draw ${name}'s driving route.`,
+      restDay: ({ kind, names }, t) =>
+        `${kind === 'shabbat' ? "It's Shabbat" : "It's a holiday"}, so almost no buses are running. ${t('list', names)} will be picked up at home.`,
     },
   },
 
@@ -439,6 +441,8 @@ const STRINGS = {
       cantMakeIt: ({ target, earliest }, t, time) =>
         `אי אפשר שכולם יגיעו עד ${time(target)}. הכי מוקדם שכולם יכולים להגיע הוא בערך ${time(earliest)}. אפשר לשנות את שעת ההגעה בהגדרות הנסיעה, או להמשיך עם התכנון הזה.`,
       routeFailed: ({ name }) => `לא הצלחנו לצייר את מסלול הנסיעה של ${name}.`,
+      restDay: ({ kind, names }, t) =>
+        `${kind === 'shabbat' ? 'בשבת' : 'בחג'} כמעט אין תחבורה ציבורית, אז האיסוף של ${t('list', names)} יהיה מהבית.`,
     },
   },
 };

@@ -1,6 +1,6 @@
 const test = require('node:test');
 const assert = require('node:assert/strict');
-const { optimize, extractCandidates, itinerarySteps, decodePolyline, planTrip } = require('../server/planner');
+const { optimize, extractCandidates, itinerarySteps, decodePolyline, planTrip, restTime } = require('../server/planner');
 
 const MIN = 60000;
 const T0 = Date.parse('2026-09-28T06:00:00Z');
@@ -386,4 +386,36 @@ test("arrive by: says so when the group can't make it in time", async () => {
     planTrip({ drivers: [{ id: 'a', name: 'A', place: at(32) }], riders: [{ id: 'r', name: 'R', place: at(32.1) }], arriveBy: new Date(T0 - MIN).toISOString(), now: T0 }, flatProviders),
     /already passed/,
   );
+});
+
+// ---------- Shabbat & holidays ----------
+
+test('Shabbat and holiday windows (Israel time)', () => {
+  const il = (s) => Date.parse(`${s}+03:00`);
+  assert.equal(restTime(il('2026-10-09T10:00:00')), null, 'Friday morning: buses run');
+  assert.equal(restTime(il('2026-10-09T16:00:00')), 'shabbat', 'Friday afternoon');
+  assert.equal(restTime(il('2026-10-10T12:00:00')), 'shabbat', 'Saturday midday');
+  assert.equal(restTime(il('2026-10-10T21:00:00')), null, 'Saturday night: buses are back');
+  assert.equal(restTime(il('2026-09-21T09:00:00')), 'holiday', 'Yom Kippur');
+  assert.equal(restTime(il('2026-09-20T17:00:00')), 'holiday', 'Yom Kippur eve');
+  assert.equal(restTime(il('2026-09-28T09:00:00')), null, 'Chol HaMoed Sukkot: buses run');
+});
+
+test('on Shabbat, one clear note instead of "no transit" per rider', async () => {
+  const res = await planTrip(
+    {
+      drivers: [{ id: 'a', name: 'Avi', place: at(32.0) }],
+      riders: [
+        { id: 'r1', name: 'Roni', place: at(32.02) },
+        { id: 'r2', name: 'Dana', place: at(32.03) },
+      ],
+      destination: { type: 'custom', place: at(32.3, 'Party') },
+      departAfter: '2026-10-10T09:00:00Z', // Saturday midday in Israel
+      now: Date.parse('2026-10-10T09:00:00Z'),
+      trafficFactor: 1,
+    },
+    flatProviders,
+  );
+  assert.deepEqual(res.notes.map((n) => n.code), ['restDay']);
+  assert.deepEqual(res.notes[0].params, { kind: 'shabbat', names: ['Roni', 'Dana'] });
 });
