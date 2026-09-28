@@ -5,6 +5,7 @@ const crypto = require('node:crypto');
 const providers = require('./providers');
 const { planTrip, PRIORITY_WEIGHTS, MAX_RIDERS, MAX_DRIVERS, MAX_STOPS, MAX_SEATS } = require('./planner');
 const store = require('./store');
+const { buildIcs } = require('./calendar');
 
 /** `code` + `params` let the app translate the message; `message` is the English fallback. */
 class HttpError extends Error {
@@ -236,6 +237,15 @@ const routes = [
     trip.locked = null;
     await touch(trip, { invalidatePlan: false });
     return [200, { trip }];
+  }],
+
+  // calendar invite for one person's part of the plan (reminder 10 min before leaving)
+  ['GET', /^\/api\/trips\/([\w-]+)\/calendar\/([\w-]+)\.ics$/, async (b, [id, pid], url) => {
+    const trip = await getTrip(id);
+    const lang = url.searchParams.get('lang') === 'en' ? 'en' : 'he';
+    const cal = buildIcs(trip, pid, lang, url.origin);
+    if (!cal) throw new HttpError(404, 'Nothing to add to the calendar yet', 'noCalendar');
+    return [200, { raw: cal.ics, contentType: 'text/calendar; charset=utf-8', filename: cal.filename }];
   }],
 
   ['GET', /^\/api\/geocode$/, async (_b, _m, url) => {

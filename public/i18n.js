@@ -121,6 +121,22 @@ const STRINGS = {
     sumBack: '↩ back',
     sumStops: (n) => (n === 1 ? '1 stop' : `${n} stops`),
 
+    // reminders
+    remindMe: '🔔 Remind me when to leave',
+    remSet: (times) => `Reminders set for ${times}`,
+    remNone: 'Reminders are on. Nothing left to remind you about.',
+    remOff: 'Turn off',
+    remDenied: 'Notifications are off for Pickup Planner. Turn them on in iPhone Settings → Notifications → Pickup Planner.',
+    remUpdated: 'The plan changed, so your reminders were updated.',
+    remLeaveSoon: 'Leave in 10 minutes',
+    remLeaveNow: 'Time to leave',
+    remBus: (mode, line, stop, time) => `${mode} ${line} from ${stop} at ${time}`,
+    remDriverSoon: (name) => `${name} arrives in 10 minutes`,
+    remBeReady: 'Be ready outside.',
+    remFirstPickup: (names, time) => `First pickup: ${names} at ${time}`,
+    remDriveTo: (dest, time) => `Drive to ${dest}, arrive ${time}`,
+    addCalendar: '📅 Add to calendar (alert 10 min before)',
+
     // organizer & confirming
     organizer: 'organizer',
     onlyOrganizer: (name) => `Only ${name} (the organizer) can change these.`,
@@ -237,6 +253,7 @@ const STRINGS = {
       organizerStays: 'The organizer can’t be removed.',
       planLocked: 'The plan is confirmed. The organizer can unlock it to recalculate.',
       planStale: 'Recalculate before confirming.',
+      noCalendar: 'Nothing to add to the calendar yet.',
     },
     // plan notes (by code)
     note: {
@@ -358,6 +375,21 @@ const STRINGS = {
     sumBack: '↩ חזרה',
     sumStops: (n) => (n === 1 ? 'עצירה אחת' : `${n} עצירות`),
 
+    remindMe: '🔔 תזכורת כשצריך לצאת',
+    remSet: (times) => `נקבעו תזכורות ל-${times}`,
+    remNone: 'התזכורות פעילות, אבל לא נשארו זמנים להזכיר.',
+    remOff: 'ביטול',
+    remDenied: 'ההתראות של Pickup Planner כבויות. אפשר להפעיל אותן בהגדרות ← עדכונים ← Pickup Planner.',
+    remUpdated: 'התכנון השתנה, אז התזכורות עודכנו.',
+    remLeaveSoon: 'עוד 10 דקות יוצאים',
+    remLeaveNow: 'הגיע הזמן לצאת',
+    remBus: (mode, line, stop, time) => `${mode} ${line} מהתחנה ${stop} ב-${time}`,
+    remDriverSoon: (name) => `${name} מגיע/ה בעוד 10 דקות`,
+    remBeReady: 'כדאי להיות מוכנים בחוץ.',
+    remFirstPickup: (names, time) => `איסוף ראשון: ${names} ב-${time}`,
+    remDriveTo: (dest, time) => `נסיעה ליעד: ${dest}, הגעה ב-${time}`,
+    addCalendar: '📅 הוספה ליומן (התראה 10 דקות לפני)',
+
     organizer: 'מארגן/ת',
     onlyOrganizer: (name) => `רק ${name} (המארגן/ת) יכול/ה לשנות את אלה.`,
     confirmPlan: '✅ אישור התכנון',
@@ -466,6 +498,7 @@ const STRINGS = {
       organizerStays: 'אי אפשר להסיר את המארגן/ת.',
       planLocked: 'התכנון אושר. המארגן/ת יכול/ה לפתוח אותו כדי לחשב מחדש.',
       planStale: 'צריך לחשב מחדש לפני האישור.',
+      noCalendar: 'עדיין אין מה להוסיף ליומן.',
     },
     note: {
       noTransit: ({ name }) => `לא נמצאה תחבורה ציבורית עבור ${name} בשעה הזו, אז האיסוף יהיה מהמיקום של ${name}.`,

@@ -32,6 +32,7 @@ const LABELS_PER_NODE = 8;
 // time. Low enough that meeting at a stop still wins when it saves real driving, high
 // enough that nobody rides two hours to reach a car that could have come to them.
 const RIDER_TRANSIT_WEIGHT = 0.25;
+const TRANSFER_PENALTY_S = 8 * 60; // each change of bus/train counts like 8 extra minutes
 const STOP_DWELL_S = 10 * 60; // time spent at each stop on the way
 const MIN_MS = 60000;
 
@@ -171,6 +172,7 @@ function extractCandidates(rider, itineraries, departAfterMs) {
           lon: s.lon,
           arrival,
           depart: t(it.startTime),
+          transfers: it.legs.slice(0, legIndex + 1).filter(isTransitLeg).length - 1,
           itinerary: it,
           legIndex,
           stopIndex,
@@ -261,7 +263,8 @@ function optimize({ riders, matrix, startIdx, destIdx, t0, lambda, traffic = 1, 
       const next = [];
       for (const cand of riders[r].cands) {
         const here = [];
-        const pen = cand.depart != null ? mu * Math.max(0, cand.arrival - cand.depart) : 0;
+        const pen =
+          cand.depart != null ? mu * Math.max(0, cand.arrival - cand.depart) + (cand.transfers || 0) * TRANSFER_PENALTY_S * 1000 * (mu > 0) : 0;
         for (const L of labels) {
           const d = dur(L.at, cand.idx);
           if (d == null) continue;

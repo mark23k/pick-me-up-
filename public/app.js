@@ -354,7 +354,10 @@ function renderTrip() {
     <div id="results">${trip.plan ? resultsHtml(trip.plan) : ''}</div>`;
   window.scrollTo(0, scrollY);
   bindTrip();
-  if (trip.plan) drawMap(trip.plan);
+  if (trip.plan) {
+    drawMap(trip.plan);
+    syncReminders(trip);
+  }
 }
 
 /** Find / recalculate, confirm, unlock, and what everyone else sees while the plan is confirmed. */
@@ -576,6 +579,7 @@ function resultsHtml(plan) {
     </div>
     <section class="card">
       ${sel.role === 'driver' ? driverView(drivers.find((d) => d.participantId === sel.id), plan) : riderView(plan.riders.find((r) => r.participantId === sel.id), plan)}
+      ${sel.id === me ? remindersHtml(plan) : ''}
       <div id="map" dir="ltr" role="img" aria-label="${esc(t('mapAria'))}"></div>
     </section>
     ${alternativesHtml(plan)}
@@ -703,6 +707,104 @@ function alternativesHtml(plan) {
     .join('');
   return `<details class="card"><summary>${t('otherOptions')}</summary><div style="margin-top:8px">${rows}</div>
     <p class="small muted">${t('altNote')}</p></details>`;
+}
+
+// ---------- reminders ----------
+// In the iPhone/Android app: notifications scheduled on the phone (no server needed).
+// On the website: a calendar invite with a 10-minute alert.
+
+const hasNotifications = () =>
+  !!window.Capacitor?.isNativePlatform?.() && (window.Capacitor.PluginHeaders || []).some((h) => h.name === 'LocalNotifications');
+const notif = (method, options = {}) => window.Capacitor.nativePromise('LocalNotifications', method, options);
+const remKey = (tripId) => `pp:rem:${tripId}`; // { ids, sig } of what's scheduled
+const remOnKey = (tripId) => `pp:remOn:${tripId}`;
+
+/** What to remind me about in this plan: [{ at (ms), title, body }] in the future. */
+function myReminders(plan) {
+  const r = plan.riders.find((x) => x.participantId === state.me);
+  const d = planDrivers(plan).find((x) => x.participantId === state.me);
+  const out = [];
+  const add = (at, title, body) => at > Date.now() + 30e3 && out.push({ at, title, body });
+  const before = (iso) => Date.parse(iso) - 10 * 60e3;
+  if (r?.mode === 'transit') {
+    const first = r.steps.find((x) => x.type === 'ride');
+    const body = first ? t('remBus', modeName(first.mode), first.line || first.routeName || '', first.from, fmtTime(first.departAt)) : '';
+    add(before(r.leaveAt), t('remLeaveSoon'), body);
+    add(Date.parse(r.leaveAt), t('remLeaveNow'), body);
+  } else if (r?.mode === 'home') {
+    add(before(r.pickup.driverEta), t('remDriverSoon', r.driverName), t('remBeReady'));
+  } else if (d && (d.stops.length || d.destination)) {
+    const first = d.stops[0];
+    const body = first
+      ? t('remFirstPickup', t('list', first.riders), fmtTime(first.eta))
+      : t('remDriveTo', d.destination.label, fmtTime(d.destination.eta));
+    add(before(d.leaveAt), t('remLeaveSoon'), body);
+    add(Date.parse(d.leaveAt), t('remLeaveNow'), body);
+  }
+  return out;
+}
+
+const hasPart = (plan) =>
+  plan.riders.some((x) => x.participantId === state.me) ||
+  planDrivers(plan).some((x) => x.participantId === state.me && (x.stops.length || x.destination));
+
+function remindersHtml(plan) {
+  if (!state.me || !hasPart(plan)) return '';
+  const tripId = state.trip.id;
+  if (!hasNotifications()) {
+    const href = `/api/trips/${tripId}/calendar/${encodeURIComponent(state.me)}.ics?lang=${lang}`;
+    return `<a class="btn ghost block reminder-btn" href="${href}">${t('addCalendar')}</a>`;
+  }
+  if (!storage.get(remOnKey(tripId), false)) return `<button id="remOn" class="btn block reminder-btn">${t('remindMe')}</button>`;
+  const times = myReminders(plan).map((x) => fmtTime(x.at));
+  return `<div class="row reminder-btn"><span class="grow small">🔔 ${times.length ? t('remSet', times.join(', ')) : t('remNone')}</span>
+    <button id="remOff" class="btn ghost small">${t('remOff')}</button></div>`;
+}
+
+// stable id per trip so we can replace this trip's notifications without touching others
+const remBaseId = (tripId) => ([...tripId].reduce((h, c) => (h * 31 + c.charCodeAt(0)) >>> 0, 7) % 200000) * 10;
+
+async function cancelReminders(tripId) {
+  const prev = storage.get(remKey(tripId), null);
+  if (prev?.ids?.length) await notif('cancel', { notifications: prev.ids.map((id) => ({ id })) }).catch(() => {});
+  storage.set(remKey(tripId), null);
+}
+
+/** Keep the phone's scheduled notifications in line with the latest plan. */
+async function syncReminders(trip, { force = false } = {}) {
+  if (!hasNotifications() || !trip.plan || !storage.get(remOnKey(trip.id), false)) return;
+  const list = myReminders(trip.plan);
+  const sig = JSON.stringify(list);
+  const prev = storage.get(remKey(trip.id), null);
+  if (!force && prev?.sig === sig) return;
+  await cancelReminders(trip.id);
+  const base = remBaseId(trip.id);
+  const notifications = list.map((x, i) => ({ id: base + i, title: x.title, body: x.body, schedule: { at: new Date(x.at), allowWhileIdle: true } }));
+  try {
+    if (notifications.length) await notif('schedule', { notifications });
+    storage.set(remKey(trip.id), { ids: notifications.map((n) => n.id), sig });
+    if (prev && !force) toast(t('remUpdated'), 4000);
+  } catch (err) {
+    toast(err.message || String(err));
+  }
+}
+
+async function enableReminders() {
+  try {
+    const perm = await notif('requestPermissions');
+    if (perm?.display !== 'granted') return toast(t('remDenied'), 6000);
+    storage.set(remOnKey(state.trip.id), true);
+    await syncReminders(state.trip, { force: true });
+    renderTrip();
+  } catch (err) {
+    toast(err.message || String(err));
+  }
+}
+
+async function disableReminders() {
+  await cancelReminders(state.trip.id);
+  storage.set(remOnKey(state.trip.id), false);
+  renderTrip();
 }
 
 // ---------- map ----------
@@ -893,6 +995,9 @@ function bindTrip() {
       renderTrip();
     }
   });
+
+  q('remOn')?.addEventListener('click', enableReminders);
+  q('remOff')?.addEventListener('click', disableReminders);
 
   const post = async (path) => {
     try {

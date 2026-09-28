@@ -58,6 +58,14 @@ const server = http.createServer(async (req, res) => {
   if (!url.pathname.startsWith('/api/')) return serveStatic(url, res);
   const body = req.method === 'GET' ? '' : await readBody(req);
   const [status, data] = await handleApi({ method: req.method, url, body, key: req.headers['x-key'] || null });
+  if (data.raw != null) {
+    res.writeHead(status, {
+      'Content-Type': data.contentType,
+      'Content-Disposition': `inline; filename="${data.filename}"`,
+      'Cache-Control': 'no-store',
+    });
+    return res.end(data.raw);
+  }
   send(res, status, data);
 });
 if (require.main === module) {

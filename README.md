@@ -8,6 +8,12 @@ Find the best place to pick up friends anywhere in Israel. Whoever starts the gr
 
 Pickup spots lean toward where the group is heading, so no one is sent the opposite way unless it's really faster. There can be up to 6 riders. Two riders may be sent to the same interchange so they're collected together.
 
+**Organizer & confirming.** Whoever creates the trip is the organizer: only they change the destination, time and stops, remove people, and **confirm** the plan. A confirmed plan is locked until they unlock it; later changes show a warning instead of silently changing everyone's instructions. Each phone proves who it is with a secret key (`X-Key`) it gets when it creates or joins.
+
+**Reminders.** In the iPhone/Android app, "🔔 Remind me when to leave" schedules notifications on the phone 10 minutes before and at leave time, and updates them when the plan changes. On the website, "📅 Add to calendar" downloads an invite (`/api/trips/:id/calendar/:pid.ics`) with a 10-minute alert.
+
+**Shabbat & holidays** (Hebrew calendar) get one clear note when buses aren't running. Timetable and address lookups are cached for 10 minutes to stay within the free services' limits.
+
 The app is in **Hebrew by default** (right-to-left), with a button in the top bar to switch to English. All text lives in `public/i18n.js`. Server errors and plan notes carry a `code` + `params` that the app translates, with English as the fallback.
 
 ## Run it
@@ -36,6 +42,7 @@ server/
   index.js      Node HTTP server: API + static files (no framework)
   planner.js    the planning engine (pure logic + orchestration)
   providers.js  Transitous / OSRM / Nominatim clients
+  calendar.js   .ics invite for one person's part of the plan
   store.js      trip storage: JSON file, or Netlify Blobs (trips expire after 3 days)
 netlify/        Netlify Function wrapping server/api.js
 public/         the phone app (PWA): index.html, app.js, i18n.js (Hebrew/English), styles.css, sw.js, manifest
@@ -51,7 +58,9 @@ test/           node:test unit tests
 | PATCH | `/api/trips/:id` | `{arriveBy, priority, destination, stops}` |
 | POST | `/api/trips/:id/participants` | join `{name, role}` |
 | PATCH / DELETE | `/api/trips/:id/participants/:pid` | set `{place, name, role, seats}` / remove |
-| POST | `/api/trips/:id/plan` | compute the plan |
+| POST | `/api/trips/:id/plan` | compute the plan (refused while confirmed) |
+| POST | `/api/trips/:id/confirm` · `/unlock` | organizer locks / unlocks the plan |
+| GET | `/api/trips/:id/calendar/:pid.ics?lang=` | calendar invite for one person |
 | GET | `/api/geocode?q=` · `/api/reverse?lat=&lon=` | search places / GPS → address |
 
 ## iPhone & Android apps

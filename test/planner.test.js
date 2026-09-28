@@ -419,3 +419,23 @@ test('on Shabbat, one clear note instead of "no transit" per rider', async () =>
   assert.deepEqual(res.notes.map((n) => n.code), ['restDay']);
   assert.deepEqual(res.notes[0].params, { kind: 'shabbat', names: ['Roni', 'Dana'] });
 });
+
+test('changing buses counts against a pickup spot', () => {
+  // two stops with the same arrival and driving; one needs two changes of bus
+  const m = [
+    [0, 1200, 1200, 1800],
+    [1200, 0, 0, 600],
+    [1200, 0, 0, 600],
+    [1800, 600, 600, 0],
+  ];
+  const riders = [
+    {
+      cands: [
+        { idx: 1, arrival: T0 + 20 * MIN, depart: T0, transfers: 2, key: 'threeBuses' },
+        { idx: 2, arrival: T0 + 22 * MIN, depart: T0, transfers: 0, key: 'oneBus' },
+      ],
+    },
+  ];
+  const sols = optimize({ riders, matrix: m, startIdx: 0, destIdx: 3, t0: T0, lambda: 0.35, bufferS: 0, mu: 0.25 });
+  assert.equal(sols[0].picks[0].cand.key, 'oneBus');
+});

@@ -11,6 +11,12 @@ export default async (req) => {
   const url = new URL(req.url);
   const body = req.method === 'GET' || req.method === 'HEAD' ? '' : await req.text();
   const [status, data] = await handleApi({ method: req.method, url, body, key: req.headers.get('x-key') });
+  if (data.raw != null) {
+    return new Response(data.raw, {
+      status,
+      headers: { 'Content-Type': data.contentType, 'Content-Disposition': `inline; filename="${data.filename}"`, 'Cache-Control': 'no-store' },
+    });
+  }
   return Response.json(data, { status, headers: { 'Cache-Control': 'no-store' } });
 };
 
